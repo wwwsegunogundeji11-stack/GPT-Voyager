@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-page="index">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -29,11 +29,16 @@
         <a href="#download">Download</a>
         <a href="#install-guide">Install Guide</a>
         <a href="./privacy.html">Privacy</a>
-        <a href="./index.zh.html">ZH</a>
       </nav>
-      <a class="btn btn-outline" href="https://github.com/Duang777/GPT" target="_blank" rel="noreferrer">
-        Repository
-      </a>
+      <div class="header-actions">
+        <a class="btn btn-outline" href="https://github.com/Duang777/GPT" target="_blank" rel="noreferrer">
+          Repository
+        </a>
+        <div class="lang-switch" role="group" aria-label="Language switch">
+          <a class="lang-option" data-locale="en" href="./index.html" lang="en">EN</a>
+          <a class="lang-option" data-locale="zh" href="./index.zh.html" lang="zh-CN">中文</a>
+        </div>
+      </div>
     </header>
 
     <main id="top">
@@ -328,6 +333,7 @@
       </div>
     </footer>
 
+    <script src="./lang-switch.js"></script>
     <script src="./script.js"></script>
   </body>
 </html>

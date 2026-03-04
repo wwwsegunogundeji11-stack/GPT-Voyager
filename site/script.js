@@ -29,28 +29,28 @@ const previewByLocale = {
   },
   zh: {
     index: {
-      chip: "会话工作区",
-      title: "会话中心：检索 + 筛选 + 跳转",
-      text: "通过本地索引、文件夹和标签筛选，快速定位并打开目标会话。",
-      points: ["本地索引检索", "文件夹与标签联动", "一键打开会话"]
+      chip: "\u4f1a\u8bdd\u5de5\u4f5c\u533a",
+      title: "\u4f1a\u8bdd\u4e2d\u5fc3\uff1a\u68c0\u7d22 + \u7b5b\u9009 + \u8df3\u8f6c",
+      text: "\u901a\u8fc7\u672c\u5730\u7d22\u5f15\u3001\u6587\u4ef6\u5939\u548c\u6807\u7b7e\u7b5b\u9009\uff0c\u5feb\u901f\u5b9a\u4f4d\u5e76\u6253\u5f00\u76ee\u6807\u4f1a\u8bdd\u3002",
+      points: ["\u672c\u5730\u7d22\u5f15\u68c0\u7d22", "\u6587\u4ef6\u5939\u4e0e\u6807\u7b7e\u8054\u52a8", "\u4e00\u952e\u6253\u5f00\u4f1a\u8bdd"]
     },
     prompt: {
-      chip: "提示词库",
-      title: "模板片段与变量占位支持",
-      text: "沉淀高频 Prompt，按标签分组，填充变量后可直接插入输入框。",
-      points: ["模板管理", "标签分组", "变量填充插入"]
+      chip: "\u63d0\u793a\u8bcd\u5e93",
+      title: "\u6a21\u677f\u7247\u6bb5\u4e0e\u53d8\u91cf\u5360\u4f4d\u652f\u6301",
+      text: "\u6c89\u6dc0\u9ad8\u9891 Prompt\uff0c\u6309\u6807\u7b7e\u5206\u7ec4\uff0c\u586b\u5145\u53d8\u91cf\u540e\u53ef\u76f4\u63a5\u63d2\u5165\u8f93\u5165\u6846\u3002",
+      points: ["\u6a21\u677f\u7ba1\u7406", "\u6807\u7b7e\u5206\u7ec4", "\u53d8\u91cf\u586b\u5145\u63d2\u5165"]
     },
     formula: {
-      chip: "公式工作台",
-      title: "公式提取与多格式复制",
-      text: "从消息中提取公式，支持 LaTeX / MathML 复制，并可回跳消息来源。",
-      points: ["公式集中提取", "LaTeX / MathML 复制", "来源消息定位"]
+      chip: "\u516c\u5f0f\u5de5\u4f5c\u53f0",
+      title: "\u516c\u5f0f\u63d0\u53d6\u4e0e\u591a\u683c\u5f0f\u590d\u5236",
+      text: "\u4ece\u6d88\u606f\u4e2d\u63d0\u53d6\u516c\u5f0f\uff0c\u652f\u6301 LaTeX / MathML \u590d\u5236\uff0c\u5e76\u53ef\u56de\u8df3\u6d88\u606f\u6765\u6e90\u3002",
+      points: ["\u516c\u5f0f\u96c6\u4e2d\u63d0\u53d6", "LaTeX / MathML \u590d\u5236", "\u6765\u6e90\u6d88\u606f\u5b9a\u4f4d"]
     },
     mermaid: {
-      chip: "Mermaid 工作台",
-      title: "图表预览与来源追踪",
-      text: "识别 Mermaid 代码块，提供预览、源码复制与回跳定位能力。",
-      points: ["图表实时预览", "源码快速复制", "来源消息追踪"]
+      chip: "Mermaid \u5de5\u4f5c\u53f0",
+      title: "\u56fe\u8868\u9884\u89c8\u4e0e\u6765\u6e90\u8ffd\u8e2a",
+      text: "\u8bc6\u522b Mermaid \u4ee3\u7801\u5757\uff0c\u63d0\u4f9b\u9884\u89c8\u3001\u6e90\u7801\u590d\u5236\u4e0e\u56de\u8df3\u5b9a\u4f4d\u80fd\u529b\u3002",
+      points: ["\u56fe\u8868\u5b9e\u65f6\u9884\u89c8", "\u6e90\u7801\u5feb\u901f\u590d\u5236", "\u6765\u6e90\u6d88\u606f\u8ffd\u8e2a"]
     }
   }
 };

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-page="index">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -29,11 +29,16 @@
         <a href="#download">下载</a>
         <a href="#install-guide">安装指引</a>
         <a href="./privacy.zh.html">隐私</a>
-        <a href="./index.html">EN</a>
       </nav>
-      <a class="btn btn-outline" href="https://github.com/Duang777/GPT" target="_blank" rel="noreferrer">
-        仓库
-      </a>
+      <div class="header-actions">
+        <a class="btn btn-outline" href="https://github.com/Duang777/GPT" target="_blank" rel="noreferrer">
+          仓库
+        </a>
+        <div class="lang-switch" role="group" aria-label="语言切换">
+          <a class="lang-option" data-locale="en" href="./index.html" lang="en">EN</a>
+          <a class="lang-option" data-locale="zh" href="./index.zh.html" lang="zh-CN">中文</a>
+        </div>
+      </div>
     </header>
 
     <main id="top">
@@ -46,7 +51,9 @@
             帮你把长期对话沉淀成结构化资产。
           </p>
           <div class="hero-actions">
-            <a class="btn btn-primary" href="https://github.com/Duang777/GPT/releases/latest" target="_blank" rel="noreferrer">最新版本</a>
+            <a class="btn btn-primary" href="https://github.com/Duang777/GPT/releases/latest" target="_blank" rel="noreferrer">
+              最新版本
+            </a>
             <a class="btn btn-outline" href="https://duang777.github.io/GPT/" target="_blank" rel="noreferrer">
               在线预览
             </a>
@@ -139,9 +146,7 @@
             <div class="preview-copy">
               <p class="chip" id="previewChip">会话工作区</p>
               <h3 id="previewTitle">会话中心：检索 + 筛选 + 跳转</h3>
-              <p id="previewText">
-                通过本地索引、文件夹和标签筛选，快速定位并打开目标会话。
-              </p>
+              <p id="previewText">通过本地索引、文件夹和标签筛选，快速定位并打开目标会话。</p>
               <ul id="previewPoints">
                 <li>本地索引检索</li>
                 <li>文件夹与标签联动</li>
@@ -296,7 +301,7 @@
               <li>打开 <a href="https://github.com/Duang777/GPT/releases/latest" target="_blank" rel="noreferrer">Latest Release</a>。</li>
               <li>下载发布 ZIP 资产并解压。</li>
               <li>打开 <code>chrome://extensions</code>，开启开发者模式。</li>
-              <li>点击「加载已解压的扩展程序」，选择解压后的扩展目录。</li>
+              <li>点击“加载已解压的扩展程序”，选择解压后的扩展目录。</li>
             </ol>
           </article>
           <article class="guide-card">
@@ -326,6 +331,7 @@
       </div>
     </footer>
 
+    <script src="./lang-switch.js"></script>
     <script src="./script.js"></script>
   </body>
 </html>
