@@ -1,9 +1,12 @@
 # GPT Voyager（ChatGPT 网页效率扩展）
 
+<img src="src/icons/icon-128.png" alt="GPT Voyager 图标" width="72" />
+
 GPT Voyager 是一个为 `chatgpt.com` / `chat.openai.com` 提供侧边栏工作台的浏览器扩展。  
 它的目标很明确：把会话管理、提示词复用、公式/图表处理、导出与备份放到一个稳定、可复用的工作流里。
 
 ## 下载与入口
+- 在线网页（前端演示）：<https://duang777.github.io/GPT/>
 - 最新版本下载（ZIP）：<https://github.com/Duang777/GPT/releases/latest>
 - 项目仓库：<https://github.com/Duang777/GPT>
 - 隐私政策：<https://duang777.github.io/GPT/privacy.html>
