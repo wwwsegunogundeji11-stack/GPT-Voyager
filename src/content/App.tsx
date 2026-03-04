@@ -42,13 +42,18 @@ import {
 import { renderMermaidSvg } from "./mermaidRender";
 import {
   createPromptId,
+  createPromptPresetId,
   extractPromptVariables,
   fillPromptVariables,
   loadPromptLibrary,
   normalizePromptContent,
+  normalizePromptPresetName,
+  normalizePromptPresetValues,
   normalizePromptTags,
   normalizePromptTitle,
+  sanitizePromptVariablePresets,
   savePromptLibrary,
+  type PromptVariablePreset,
   type PromptSnippet
 } from "./promptLibrary";
 import {
@@ -58,9 +63,26 @@ import {
   type FormulaFavorite
 } from "./formulaFavoritesStore";
 import {
+  createMermaidFavoriteId,
+  loadMermaidFavorites,
+  normalizeMermaidCodeForMatch,
+  saveMermaidFavorites,
+  type MermaidFavorite
+} from "./mermaidFavoritesStore";
+import {
+  buildTimelineAnnotationKey,
+  createTimelineAnnotationId,
+  loadTimelineAnnotations,
+  normalizeTimelineAnnotationTags,
+  saveTimelineAnnotations,
+  type TimelineNodeAnnotation
+} from "./timelineAnnotationsStore";
+import {
   createDefaultSettings,
   loadUserSettings,
   saveUserSettings,
+  type ConversationCardDensity,
+  type ConversationSortMode,
   type UserSettings
 } from "./settingsStore";
 import {
@@ -88,8 +110,35 @@ type BatchUndoSnapshot = {
   createdAt: number;
 };
 
+type PromptTemplateTransferPreset = {
+  name: string;
+  values: Record<string, string>;
+};
+
+type PromptTemplateTransferItem = {
+  title: string;
+  content: string;
+  tags: string[];
+  variablePresets: PromptTemplateTransferPreset[];
+};
+
+type PromptTemplateTransferPayload = {
+  schemaVersion: 1;
+  app: "gpt-voyager-prompt-template";
+  exportedAt: number;
+  prompt: PromptTemplateTransferItem;
+};
+
+type PromptTemplateBatchTransferPayload = {
+  schemaVersion: 1;
+  app: "gpt-voyager-prompt-template-batch";
+  exportedAt: number;
+  prompts: PromptTemplateTransferItem[];
+};
+
 type TimelineExportContent = {
   item: ConversationTimelineItem;
+  annotation?: TimelineNodeAnnotation;
   content: string;
 };
 
@@ -98,6 +147,13 @@ const MIN_WIDTH = 280;
 const MAX_WIDTH = 640;
 const DEFAULT_WIDTH = 360;
 const EXTENSION_HOST_ID = "gpt-voyager-host";
+const TIMELINE_HIGHLIGHT_STYLE_ID = "gpt-voyager-timeline-highlight-style";
+const TIMELINE_HIGHLIGHT_ATTR = "data-gv-timeline-highlighted";
+const CHAT_WIDTH_STYLE_ID = "gpt-voyager-chat-content-width-style";
+const CONVERSATION_ROW_HEIGHT_COMPACT = 150;
+const CONVERSATION_ROW_HEIGHT_STANDARD = 188;
+const CONVERSATION_VIRTUAL_OVERSCAN = 6;
+const CONVERSATION_LIST_FALLBACK_HEIGHT = 520;
 const EMPTY_META: ConversationClassificationMeta = { tagIds: [] };
 
 async function loadPanelState(): Promise<PanelState> {
@@ -188,6 +244,18 @@ function buildFormulaFavoriteKey(
   return `${conversationId}::${displayMode}::${normalizeFormulaTexForMatch(tex)}`;
 }
 
+function createMermaidAlias(code: string): string {
+  const firstLine = code.split("\n")[0]?.replace(/\s+/g, " ").trim() ?? "";
+  if (!firstLine) {
+    return "未命名图表";
+  }
+  return firstLine.length > 24 ? `${firstLine.slice(0, 24)}…` : firstLine;
+}
+
+function buildMermaidFavoriteKey(conversationId: string, code: string): string {
+  return `${conversationId}::${normalizeMermaidCodeForMatch(code)}`;
+}
+
 function getConversationTitleForExport(): string {
   const activeLink = document.querySelector<HTMLAnchorElement>('a[href^="/c/"][aria-current="page"]');
   if (activeLink?.textContent?.trim()) {
@@ -209,6 +277,13 @@ function sanitizeExportFileName(name: string): string {
   return compact.slice(0, 80);
 }
 
+function clampChatContentWidthPercent(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 78;
+  }
+  return Math.min(96, Math.max(64, Math.round(value)));
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -223,11 +298,13 @@ function buildTimelineMarkdown(
   url: string,
   nodes: TimelineExportContent[],
   query: string,
-  roleFilter: "all" | TimelineRole
+  roleFilter: "all" | TimelineRole,
+  tagFilter: string
 ): string {
   const exportedAt = new Date().toLocaleString("zh-CN", { hour12: false });
   const filterRoleText = roleFilter === "all" ? "全部角色" : timelineRoleLabel(roleFilter);
   const filterQueryText = query.trim() || "(空)";
+  const filterTagText = tagFilter === "all" ? "全部标签" : tagFilter;
   const lines: string[] = [];
   lines.push(`# ${title} - 会话时间线导出`);
   lines.push("");
@@ -235,10 +312,17 @@ function buildTimelineMarkdown(
   lines.push(`- 会话链接：${url}`);
   lines.push(`- 节点数量：${nodes.length}`);
   lines.push(`- 角色筛选：${filterRoleText}`);
+  lines.push(`- 标签筛选：${filterTagText}`);
   lines.push(`- 关键词筛选：${filterQueryText}`);
   lines.push("");
   for (const node of nodes) {
     lines.push(`## 第 ${node.item.index} 条 · ${timelineRoleLabel(node.item.role)} · ${node.item.charCount} 字`);
+    if (node.annotation?.highlighted) {
+      lines.push("- 高亮标注：是");
+    }
+    if (node.annotation && node.annotation.tags.length > 0) {
+      lines.push(`- 节点标签：${node.annotation.tags.join("、")}`);
+    }
     lines.push("");
     lines.push(node.content || "(空消息)");
     lines.push("");
@@ -251,16 +335,26 @@ function buildTimelineHtml(
   url: string,
   nodes: TimelineExportContent[],
   query: string,
-  roleFilter: "all" | TimelineRole
+  roleFilter: "all" | TimelineRole,
+  tagFilter: string
 ): string {
   const exportedAt = new Date().toLocaleString("zh-CN", { hour12: false });
   const filterRoleText = roleFilter === "all" ? "全部角色" : timelineRoleLabel(roleFilter);
   const filterQueryText = query.trim() || "(空)";
+  const filterTagText = tagFilter === "all" ? "全部标签" : tagFilter;
   const body = nodes
     .map((node) => {
+      const notes: string[] = [];
+      if (node.annotation?.highlighted) {
+        notes.push('<div class="timeline-note timeline-note-highlight">高亮标注：是</div>');
+      }
+      if (node.annotation && node.annotation.tags.length > 0) {
+        notes.push(`<div class="timeline-note">节点标签：${escapeHtml(node.annotation.tags.join("、"))}</div>`);
+      }
       return `
 <section class="timeline-item">
   <h2>第 ${node.item.index} 条 · ${timelineRoleLabel(node.item.role)} · ${node.item.charCount} 字</h2>
+  ${notes.join("\n  ")}
   <div class="timeline-content">${node.content}</div>
 </section>`;
     })
@@ -308,6 +402,15 @@ function buildTimelineHtml(
       font-size: 22px;
       line-height: 1.35;
     }
+    .timeline-note {
+      margin: 0 0 7px;
+      color: #5a6270;
+      font-size: 14px;
+    }
+    .timeline-note-highlight {
+      color: #0f8064;
+      font-weight: 600;
+    }
     .timeline-content pre {
       overflow-x: auto;
       background: #0e1420;
@@ -344,6 +447,7 @@ function buildTimelineHtml(
       <li>会话链接：<a href="${escapeHtml(url)}">${escapeHtml(url)}</a></li>
       <li>节点数量：${nodes.length}</li>
       <li>角色筛选：${escapeHtml(filterRoleText)}</li>
+      <li>标签筛选：${escapeHtml(filterTagText)}</li>
       <li>关键词筛选：${escapeHtml(filterQueryText)}</li>
     </ul>
     ${body}
@@ -621,11 +725,196 @@ async function copyWordMathSource(mathml: string | undefined, fallbackTex: strin
       return "ok";
     }
   } catch {
-    // Fallback to plain text write below.
+    // Fallback to LaTeX below.
   }
 
-  const copiedMathmlText = await copyPromptText(normalizedMathml);
-  return copiedMathmlText ? "ok" : "failed";
+  const copiedTex = await copyPromptText(fallbackTex);
+  return copiedTex ? "fallback_tex" : "failed";
+}
+
+function showPageFormulaCopyFeedback(element: HTMLElement, copiedKind: "Word" | "LaTeX"): void {
+  const rect = element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    return;
+  }
+
+  document.getElementById("gpt-voyager-formula-copy-ring")?.remove();
+  document.getElementById("gpt-voyager-formula-copy-badge")?.remove();
+
+  const accent =
+    copiedKind === "Word"
+      ? {
+          badgeBorder: "rgba(16, 163, 127, 0.32)",
+          badgeBg: "rgba(255, 255, 255, 0.96)",
+          badgeColor: "#0f7e63",
+          tag: "已复制 Word 公式"
+        }
+      : {
+          badgeBorder: "rgba(72, 102, 255, 0.3)",
+          badgeBg: "rgba(255, 255, 255, 0.96)",
+          badgeColor: "#3551be",
+          tag: "已复制 LaTeX"
+        };
+
+  const badge = document.createElement("div");
+
+  const anchorLeft = window.scrollX + rect.left;
+  const anchorTop = window.scrollY + rect.top;
+  const anchorWidth = rect.width;
+  const anchorHeight = rect.height;
+  const minBadgeLeft = window.scrollX + 8;
+  const maxBadgeLeft = window.scrollX + window.innerWidth - 126;
+  const badgePreferredLeft = anchorLeft + anchorWidth - 118;
+  const badgeLeft = Math.min(maxBadgeLeft, Math.max(minBadgeLeft, badgePreferredLeft));
+  const badgeTopAbove = anchorTop - 28;
+  const minBadgeTop = window.scrollY + 8;
+  const badgeTop = badgeTopAbove < minBadgeTop ? anchorTop + anchorHeight + 6 : badgeTopAbove;
+
+  badge.textContent = accent.tag;
+  badge.id = "gpt-voyager-formula-copy-badge";
+  badge.style.position = "absolute";
+  badge.style.left = `${badgeLeft}px`;
+  badge.style.top = `${badgeTop}px`;
+  badge.style.borderRadius = "999px";
+  badge.style.border = `1px solid ${accent.badgeBorder}`;
+  badge.style.background = accent.badgeBg;
+  badge.style.color = accent.badgeColor;
+  badge.style.fontSize = "11px";
+  badge.style.fontWeight = "600";
+  badge.style.lineHeight = "1";
+  badge.style.padding = "6px 10px";
+  badge.style.pointerEvents = "none";
+  badge.style.zIndex = "2147483647";
+  badge.style.boxShadow = "0 3px 10px rgba(15, 23, 42, 0.08)";
+  badge.style.opacity = "0";
+  badge.style.transform = "translateY(2px)";
+  badge.style.transition = "opacity 140ms ease, transform 160ms ease";
+
+  document.body.appendChild(badge);
+
+  window.requestAnimationFrame(() => {
+    badge.style.opacity = "1";
+    badge.style.transform = "translateY(0)";
+  });
+
+  window.setTimeout(() => {
+    badge.style.opacity = "0";
+    badge.style.transform = "translateY(-1px)";
+    window.setTimeout(() => {
+      badge.remove();
+    }, 180);
+  }, 900);
+}
+
+function toPromptTemplateTransferItem(snippet: PromptSnippet): PromptTemplateTransferItem {
+  return {
+    title: snippet.title,
+    content: snippet.content,
+    tags: snippet.tags,
+    variablePresets: snippet.variablePresets.map((preset) => ({
+      name: preset.name,
+      values: preset.values
+    }))
+  };
+}
+
+function normalizeTemplatePreset(input: unknown): PromptTemplateTransferPreset | null {
+  if (!input || typeof input !== "object") {
+    return null;
+  }
+  const typed = input as { name?: unknown; values?: unknown };
+  const name = normalizePromptPresetName(typeof typed.name === "string" ? typed.name : "");
+  const values = normalizePromptPresetValues(typed.values);
+  if (!name || Object.keys(values).length === 0) {
+    return null;
+  }
+  return { name, values };
+}
+
+function normalizePromptTemplateInput(raw: unknown): PromptTemplateTransferItem | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const typed = raw as {
+    title?: unknown;
+    content?: unknown;
+    tags?: unknown;
+    variablePresets?: unknown;
+  };
+  const title = normalizePromptTitle(typeof typed.title === "string" ? typed.title : "");
+  const content = normalizePromptContent(typeof typed.content === "string" ? typed.content : "");
+  if (!title || !content) {
+    return null;
+  }
+
+  const tags = normalizePromptTags(typed.tags);
+  const presetsRaw = Array.isArray(typed.variablePresets) ? typed.variablePresets : [];
+  const variablePresets: PromptTemplateTransferPreset[] = [];
+  for (const item of presetsRaw) {
+    const normalized = normalizeTemplatePreset(item);
+    if (!normalized) {
+      continue;
+    }
+    variablePresets.push(normalized);
+    if (variablePresets.length >= 12) {
+      break;
+    }
+  }
+
+  return {
+    title,
+    content,
+    tags,
+    variablePresets
+  };
+}
+
+function parsePromptTemplateTransferPayload(rawText: string): PromptTemplateTransferItem[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch {
+    return [];
+  }
+
+  const items: unknown[] = [];
+  if (Array.isArray(parsed)) {
+    items.push(...parsed);
+  } else if (parsed && typeof parsed === "object") {
+    const typed = parsed as {
+      prompt?: unknown;
+      prompts?: unknown;
+      schemaVersion?: unknown;
+      app?: unknown;
+    };
+    if (Array.isArray(typed.prompts)) {
+      items.push(...typed.prompts);
+    } else if (typed.prompt) {
+      items.push(typed.prompt);
+    } else if (
+      typed.schemaVersion === 1 &&
+      typed.app === "gpt-voyager-prompt-template" &&
+      typed.prompt
+    ) {
+      items.push(typed.prompt);
+    } else {
+      items.push(parsed);
+    }
+  }
+
+  const normalized: PromptTemplateTransferItem[] = [];
+  for (const item of items) {
+    const next = normalizePromptTemplateInput(item);
+    if (!next) {
+      continue;
+    }
+    normalized.push(next);
+    if (normalized.length >= 50) {
+      break;
+    }
+  }
+  return normalized;
 }
 
 function downloadTextFile(fileName: string, content: string, mimeType: string): void {
@@ -638,6 +927,75 @@ function downloadTextFile(fileName: string, content: string, mimeType: string): 
   anchor.click();
   anchor.remove();
   setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+}
+
+function buildMermaidHtmlDocument(title: string, code: string, svg: string): string {
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(title)} - Mermaid 导出</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: #f6f7fb;
+      color: #1f2735;
+      line-height: 1.6;
+    }
+    .card {
+      max-width: 980px;
+      margin: 0 auto;
+      border: 1px solid #e4e8f1;
+      background: #fff;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 8px 24px rgba(24, 37, 62, 0.08);
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: 24px;
+    }
+    h2 {
+      margin: 18px 0 8px;
+      font-size: 16px;
+      color: #4d5562;
+    }
+    pre {
+      margin: 0;
+      overflow-x: auto;
+      border: 1px solid #e6eaf2;
+      background: #f9fbff;
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+    .svg-wrap {
+      margin-top: 8px;
+      border: 1px solid #e6eaf2;
+      border-radius: 8px;
+      background: #fcfdff;
+      padding: 12px;
+      overflow-x: auto;
+    }
+    .svg-wrap svg {
+      display: block;
+      max-width: 100%;
+      height: auto;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>${escapeHtml(title)}</h1>
+    <h2>源码</h2>
+    <pre><code>${escapeHtml(code)}</code></pre>
+    <h2>预览</h2>
+    <div class="svg-wrap">${svg}</div>
+  </main>
+</body>
+</html>`;
 }
 
 function InlineSelect<Value extends string>(props: {
@@ -724,14 +1082,19 @@ export function App(): React.ReactElement {
   const [classificationReady, setClassificationReady] = useState(false);
   const [promptReady, setPromptReady] = useState(false);
   const [formulaFavoriteReady, setFormulaFavoriteReady] = useState(false);
+  const [mermaidFavoriteReady, setMermaidFavoriteReady] = useState(false);
+  const [timelineAnnotationReady, setTimelineAnnotationReady] = useState(false);
   const [settingsReady, setSettingsReady] = useState(false);
 
   const [query, setQuery] = useState("");
   const [timelineQuery, setTimelineQuery] = useState("");
   const [timelineRoleFilter, setTimelineRoleFilter] = useState<"all" | TimelineRole>("all");
+  const [timelineTagFilter, setTimelineTagFilter] = useState("all");
   const [timelineItems, setTimelineItems] = useState<ConversationTimelineItem[]>([]);
   const [timelineStatus, setTimelineStatus] = useState("");
   const [timelineActiveId, setTimelineActiveId] = useState("");
+  const [timelineTagEditorOpenId, setTimelineTagEditorOpenId] = useState("");
+  const [timelineTagDraftById, setTimelineTagDraftById] = useState<Record<string, string>>({});
   const [formulaQuery, setFormulaQuery] = useState("");
   const [formulaDisplayFilter, setFormulaDisplayFilter] = useState<"all" | FormulaDisplayMode>("all");
   const [formulaItems, setFormulaItems] = useState<ConversationFormulaItem[]>([]);
@@ -746,6 +1109,7 @@ export function App(): React.ReactElement {
   const [mermaidActiveId, setMermaidActiveId] = useState("");
   const [mermaidSvgById, setMermaidSvgById] = useState<Record<string, string>>({});
   const [mermaidErrorById, setMermaidErrorById] = useState<Record<string, string>>({});
+  const [mermaidFavoriteQuery, setMermaidFavoriteQuery] = useState("");
   const [folderDraft, setFolderDraft] = useState("");
   const [tagDraft, setTagDraft] = useState("");
   const [folderFilter, setFolderFilter] = useState("all");
@@ -760,17 +1124,23 @@ export function App(): React.ReactElement {
   const [conversationStatus, setConversationStatus] = useState("");
   const [visibleCount, setVisibleCount] = useState(0);
   const [conversationIndex, setConversationIndex] = useState<ConversationEntry[]>([]);
+  const [conversationListHeight, setConversationListHeight] = useState(0);
+  const [conversationListScrollTop, setConversationListScrollTop] = useState(0);
   const [classificationState, setClassificationState] = useState<ClassificationState>(createEmptyClassificationState());
 
   const [promptLibrary, setPromptLibrary] = useState<PromptSnippet[]>([]);
   const [formulaFavorites, setFormulaFavorites] = useState<FormulaFavorite[]>([]);
+  const [mermaidFavorites, setMermaidFavorites] = useState<MermaidFavorite[]>([]);
+  const [timelineAnnotations, setTimelineAnnotations] = useState<TimelineNodeAnnotation[]>([]);
   const [promptTitleDraft, setPromptTitleDraft] = useState("");
   const [promptContentDraft, setPromptContentDraft] = useState("");
   const [promptTagsDraft, setPromptTagsDraft] = useState("");
   const [promptQuery, setPromptQuery] = useState("");
   const [promptTagFilter, setPromptTagFilter] = useState("all");
+  const [selectedPromptIds, setSelectedPromptIds] = useState<string[]>([]);
   const [promptVariableOpenId, setPromptVariableOpenId] = useState("");
   const [promptVariableValues, setPromptVariableValues] = useState<Record<string, Record<string, string>>>({});
+  const [promptPresetNameDraftById, setPromptPresetNameDraftById] = useState<Record<string, string>>({});
   const [editingPromptId, setEditingPromptId] = useState("");
   const [promptStatus, setPromptStatus] = useState("");
   const [exportStatus, setExportStatus] = useState("");
@@ -778,8 +1148,11 @@ export function App(): React.ReactElement {
   const [settings, setSettings] = useState<UserSettings>(createDefaultSettings());
 
   const resizingRef = useRef(false);
+  const conversationListRef = useRef<HTMLDivElement>(null);
   const backupFileInputRef = useRef<HTMLInputElement>(null);
+  const promptTemplateFileInputRef = useRef<HTMLInputElement>(null);
   const timelineNodeMapRef = useRef<Record<string, HTMLElement>>({});
+  const timelineHighlightedElementsRef = useRef<HTMLElement[]>([]);
   const formulaNodeMapRef = useRef<Record<string, HTMLElement>>({});
   const mermaidNodeMapRef = useRef<Record<string, HTMLElement>>({});
   const activeConversationId = getCurrentConversationId();
@@ -886,6 +1259,34 @@ export function App(): React.ReactElement {
 
   useEffect(() => {
     let active = true;
+    loadMermaidFavorites().then((items) => {
+      if (!active) {
+        return;
+      }
+      setMermaidFavorites(items);
+      setMermaidFavoriteReady(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    loadTimelineAnnotations().then((items) => {
+      if (!active) {
+        return;
+      }
+      setTimelineAnnotations(items);
+      setTimelineAnnotationReady(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
     loadUserSettings().then((loaded) => {
       if (!active) {
         return;
@@ -966,6 +1367,30 @@ export function App(): React.ReactElement {
   }, [formulaFavoriteReady, formulaFavorites]);
 
   useEffect(() => {
+    if (!mermaidFavoriteReady) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      saveMermaidFavorites(mermaidFavorites).catch(() => {
+        // Ignore storage errors and keep runtime state.
+      });
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [mermaidFavoriteReady, mermaidFavorites]);
+
+  useEffect(() => {
+    if (!timelineAnnotationReady) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      saveTimelineAnnotations(timelineAnnotations).catch(() => {
+        // Ignore storage errors and keep runtime state.
+      });
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [timelineAnnotationReady, timelineAnnotations]);
+
+  useEffect(() => {
     if (!settingsReady) {
       return;
     }
@@ -985,6 +1410,15 @@ export function App(): React.ReactElement {
     const validIds = new Set(conversationIndex.map((item) => item.id));
     setSelectedConversationIds((previous) => previous.filter((id) => validIds.has(id)));
   }, [conversationIndex]);
+
+  useEffect(() => {
+    if (promptLibrary.length === 0) {
+      setSelectedPromptIds([]);
+      return;
+    }
+    const validIds = new Set(promptLibrary.map((item) => item.id));
+    setSelectedPromptIds((previous) => previous.filter((id) => validIds.has(id)));
+  }, [promptLibrary]);
 
   useEffect(() => {
     if (!promptStatus) {
@@ -1157,6 +1591,157 @@ export function App(): React.ReactElement {
     }, 850);
   }, [refreshConversationTimeline]);
 
+  const toggleTimelineHighlight = useCallback((item: ConversationTimelineItem) => {
+    if (!activeConversationId) {
+      setTimelineStatus("请先打开会话详情页");
+      return;
+    }
+
+    const annotationKey = buildTimelineAnnotationKey(activeConversationId, item.id);
+    const existing = timelineAnnotations.find((annotation) => {
+      return buildTimelineAnnotationKey(annotation.conversationId, annotation.timelineItemId) === annotationKey;
+    });
+    const nextHighlighted = !Boolean(existing?.highlighted);
+    const now = Date.now();
+
+    setTimelineAnnotations((previous) => {
+      const matched = previous.find((annotation) => {
+        return buildTimelineAnnotationKey(annotation.conversationId, annotation.timelineItemId) === annotationKey;
+      });
+
+      if (!matched) {
+        if (!nextHighlighted) {
+          return previous;
+        }
+        const created: TimelineNodeAnnotation = {
+          id: createTimelineAnnotationId(),
+          conversationId: activeConversationId,
+          timelineItemId: item.id,
+          tags: [],
+          highlighted: true,
+          createdAt: now,
+          updatedAt: now
+        };
+        return [created, ...previous];
+      }
+
+      if (!nextHighlighted && matched.tags.length === 0) {
+        return previous.filter((annotation) => annotation.id !== matched.id);
+      }
+
+      const updated: TimelineNodeAnnotation = {
+        ...matched,
+        highlighted: nextHighlighted,
+        updatedAt: now
+      };
+      return [updated, ...previous.filter((annotation) => annotation.id !== matched.id)];
+    });
+
+    setTimelineStatus(nextHighlighted ? "已标记高亮节点" : "已取消高亮标记");
+  }, [activeConversationId, timelineAnnotations]);
+
+  const toggleTimelineTagEditor = useCallback((item: ConversationTimelineItem) => {
+    if (!activeConversationId) {
+      setTimelineStatus("请先打开会话详情页");
+      return;
+    }
+    const existing = timelineAnnotations.find((annotation) => {
+      return annotation.conversationId === activeConversationId && annotation.timelineItemId === item.id;
+    });
+    setTimelineTagDraftById((previous) => ({
+      ...previous,
+      [item.id]: existing ? existing.tags.join(", ") : ""
+    }));
+    setTimelineTagEditorOpenId((previous) => (previous === item.id ? "" : item.id));
+  }, [activeConversationId, timelineAnnotations]);
+
+  const saveTimelineTags = useCallback((item: ConversationTimelineItem) => {
+    if (!activeConversationId) {
+      setTimelineStatus("请先打开会话详情页");
+      return;
+    }
+
+    const nextTags = normalizeTimelineAnnotationTags(timelineTagDraftById[item.id] ?? "");
+    const annotationKey = buildTimelineAnnotationKey(activeConversationId, item.id);
+    const now = Date.now();
+
+    setTimelineAnnotations((previous) => {
+      const matched = previous.find((annotation) => {
+        return buildTimelineAnnotationKey(annotation.conversationId, annotation.timelineItemId) === annotationKey;
+      });
+
+      if (!matched) {
+        if (nextTags.length === 0) {
+          return previous;
+        }
+        const created: TimelineNodeAnnotation = {
+          id: createTimelineAnnotationId(),
+          conversationId: activeConversationId,
+          timelineItemId: item.id,
+          tags: nextTags,
+          highlighted: false,
+          createdAt: now,
+          updatedAt: now
+        };
+        return [created, ...previous];
+      }
+
+      if (nextTags.length === 0 && !matched.highlighted) {
+        return previous.filter((annotation) => annotation.id !== matched.id);
+      }
+
+      const updated: TimelineNodeAnnotation = {
+        ...matched,
+        tags: nextTags,
+        updatedAt: now
+      };
+      return [updated, ...previous.filter((annotation) => annotation.id !== matched.id)];
+    });
+
+    setTimelineStatus(nextTags.length === 0 ? "已清空节点标签" : `已保存 ${nextTags.length} 个标签`);
+  }, [activeConversationId, timelineTagDraftById]);
+
+  const removeTimelineTag = useCallback((item: ConversationTimelineItem, tag: string) => {
+    if (!activeConversationId) {
+      return;
+    }
+    const annotationKey = buildTimelineAnnotationKey(activeConversationId, item.id);
+    const now = Date.now();
+
+    setTimelineAnnotations((previous) => {
+      const matched = previous.find((annotation) => {
+        return buildTimelineAnnotationKey(annotation.conversationId, annotation.timelineItemId) === annotationKey;
+      });
+      if (!matched) {
+        return previous;
+      }
+      const nextTags = matched.tags.filter((itemTag) => itemTag !== tag);
+      if (nextTags.length === 0 && !matched.highlighted) {
+        return previous.filter((annotation) => annotation.id !== matched.id);
+      }
+      const updated: TimelineNodeAnnotation = {
+        ...matched,
+        tags: nextTags,
+        updatedAt: now
+      };
+      return [updated, ...previous.filter((annotation) => annotation.id !== matched.id)];
+    });
+
+    setTimelineStatus(`已移除标签：${tag}`);
+  }, [activeConversationId]);
+
+  const clearConversationTimelineAnnotations = useCallback(() => {
+    if (!activeConversationId) {
+      setTimelineStatus("请先打开会话详情页");
+      return;
+    }
+    const removed = timelineAnnotations.filter((item) => item.conversationId === activeConversationId).length;
+    setTimelineAnnotations((previous) => previous.filter((item) => item.conversationId !== activeConversationId));
+    setTimelineStatus(removed > 0 ? `已清空当前会话标注（${removed} 条）` : "当前会话暂无标注");
+    setTimelineTagFilter("all");
+    setTimelineTagEditorOpenId("");
+  }, [activeConversationId, timelineAnnotations]);
+
   const jumpToFormulaItem = useCallback((formulaId: string) => {
     const node = formulaNodeMapRef.current[formulaId];
     if (!node) {
@@ -1230,7 +1815,7 @@ export function App(): React.ReactElement {
     }
     if (result === "fallback_tex") {
       notifyFormulaCopied(tex, `${from} · LaTeX 回退`);
-      setFormulaStatus("未提取到 MathML，已回退复制 LaTeX");
+      setFormulaStatus("Word 复制失败，已回退复制 LaTeX");
       return;
     }
     notifyFormulaCopied(tex, `${from} · Word(MathML)`);
@@ -1241,6 +1826,131 @@ export function App(): React.ReactElement {
     const ok = await copyPromptText(code);
     setMermaidStatus(ok ? "已复制 Mermaid 源码" : "复制 Mermaid 源码失败");
   }, []);
+
+  const exportMermaidSource = useCallback((code: string, name: string) => {
+    const fileName = `${sanitizeExportFileName(name)}.mmd`;
+    downloadTextFile(fileName, `${code.trim()}\n`, "text/plain;charset=utf-8");
+    setMermaidStatus(`已导出 Mermaid 源码：${fileName}`);
+  }, []);
+
+  const exportMermaidSvg = useCallback(async (
+    code: string,
+    name: string,
+    cachedSvg?: string
+  ) => {
+    const svg = cachedSvg?.trim() ? cachedSvg.trim() : "";
+    let content = svg;
+    if (!content) {
+      const rendered = await renderMermaidSvg(code);
+      if (!rendered.ok) {
+        setMermaidStatus("导出 SVG 失败：图表渲染失败");
+        return;
+      }
+      content = rendered.svg;
+    }
+
+    const fileName = `${sanitizeExportFileName(name)}.svg`;
+    downloadTextFile(fileName, content, "image/svg+xml;charset=utf-8");
+    setMermaidStatus(`已导出 SVG：${fileName}`);
+  }, []);
+
+  const exportMermaidHtml = useCallback(async (
+    code: string,
+    name: string,
+    cachedSvg?: string
+  ) => {
+    const svg = cachedSvg?.trim() ? cachedSvg.trim() : "";
+    let content = svg;
+    if (!content) {
+      const rendered = await renderMermaidSvg(code);
+      if (!rendered.ok) {
+        setMermaidStatus("导出 HTML 失败：图表渲染失败");
+        return;
+      }
+      content = rendered.svg;
+    }
+
+    const fileName = `${sanitizeExportFileName(name)}.html`;
+    const html = buildMermaidHtmlDocument(name, code, content);
+    downloadTextFile(fileName, html, "text/html;charset=utf-8");
+    setMermaidStatus(`已导出 HTML：${fileName}`);
+  }, []);
+
+  const toggleMermaidFavorite = useCallback((item: ConversationMermaidItem) => {
+    if (!activeConversationId) {
+      setMermaidStatus("请先打开会话详情页再收藏图表");
+      return;
+    }
+
+    const favoriteKey = buildMermaidFavoriteKey(activeConversationId, item.code);
+    const existing = mermaidFavorites.find((favorite) => {
+      return buildMermaidFavoriteKey(favorite.sourceConversationId, favorite.code) === favoriteKey;
+    });
+    if (existing) {
+      setMermaidFavorites((previous) => previous.filter((favorite) => favorite.id !== existing.id));
+      setMermaidStatus("已取消收藏图表");
+      return;
+    }
+
+    const now = Date.now();
+    const nextFavorite: MermaidFavorite = {
+      id: createMermaidFavoriteId(),
+      alias: createMermaidAlias(item.code),
+      code: item.code,
+      preview: item.preview,
+      sourceConversationId: activeConversationId,
+      sourceConversationTitle: getConversationTitleForExport(),
+      sourceMessageIndex: item.messageIndex,
+      createdAt: now,
+      updatedAt: now
+    };
+    setMermaidFavorites((previous) => [nextFavorite, ...previous]);
+    setMermaidStatus("已收藏图表");
+  }, [activeConversationId, mermaidFavorites]);
+
+  const updateMermaidFavoriteAlias = useCallback((favoriteId: string, alias: string) => {
+    const normalizedAlias = alias.replace(/\s+/g, " ").trim().slice(0, 60);
+    setMermaidFavorites((previous) =>
+      previous.map((item) => {
+        if (item.id !== favoriteId) {
+          return item;
+        }
+        return {
+          ...item,
+          alias: normalizedAlias || createMermaidAlias(item.code),
+          updatedAt: Date.now()
+        };
+      })
+    );
+  }, []);
+
+  const removeMermaidFavorite = useCallback((favoriteId: string) => {
+    setMermaidFavorites((previous) => previous.filter((item) => item.id !== favoriteId));
+    setMermaidStatus("已删除图表收藏");
+  }, []);
+
+  const locateMermaidFavorite = useCallback((favorite: MermaidFavorite) => {
+    if (favorite.sourceConversationId !== activeConversationId) {
+      const target = conversationIndex.find((item) => item.id === favorite.sourceConversationId);
+      if (target) {
+        openConversation(target.url);
+      } else {
+        openConversation(`${window.location.origin}/c/${favorite.sourceConversationId}`);
+      }
+      return;
+    }
+
+    const normalizedCode = normalizeMermaidCodeForMatch(favorite.code);
+    const matched = mermaidItems.find((item) => {
+      return normalizeMermaidCodeForMatch(item.code) === normalizedCode;
+    });
+    if (!matched) {
+      setMermaidStatus("当前会话未找到该图表，已尝试刷新");
+      refreshConversationMermaid();
+      return;
+    }
+    jumpToMermaidItem(matched.id);
+  }, [activeConversationId, conversationIndex, jumpToMermaidItem, mermaidItems, refreshConversationMermaid]);
 
   const toggleFormulaFavorite = useCallback((item: ConversationFormulaItem) => {
     if (!activeConversationId) {
@@ -1327,6 +2037,9 @@ export function App(): React.ReactElement {
     setTimelineActiveId("");
     setTimelineQuery("");
     setTimelineRoleFilter("all");
+    setTimelineTagFilter("all");
+    setTimelineTagEditorOpenId("");
+    setTimelineTagDraftById({});
     setFormulaActiveId("");
     setFormulaQuery("");
     setFormulaDisplayFilter("all");
@@ -1344,6 +2057,64 @@ export function App(): React.ReactElement {
     const stopObserve = observeConversationThread(refreshConversationDerivedData, { intervalMs: 1400 });
     return () => stopObserve();
   }, [activeConversationId, refreshConversationDerivedData]);
+
+  useEffect(() => {
+    if (document.getElementById(TIMELINE_HIGHLIGHT_STYLE_ID)) {
+      return;
+    }
+    if (!document.head) {
+      return;
+    }
+
+    const style = document.createElement("style");
+    style.id = TIMELINE_HIGHLIGHT_STYLE_ID;
+    style.textContent = `
+      [${TIMELINE_HIGHLIGHT_ATTR}="true"] {
+        outline: 2px solid rgba(16, 163, 127, 0.6) !important;
+        outline-offset: 2px !important;
+        box-shadow: inset 0 0 0 1px rgba(16, 163, 127, 0.16) !important;
+        border-radius: 10px !important;
+      }
+    `;
+    document.head.appendChild(style);
+  }, []);
+
+  useEffect(() => {
+    for (const element of timelineHighlightedElementsRef.current) {
+      element.removeAttribute(TIMELINE_HIGHLIGHT_ATTR);
+    }
+
+    if (!activeConversationId) {
+      timelineHighlightedElementsRef.current = [];
+      return;
+    }
+
+    const nextHighlightedElements: HTMLElement[] = [];
+    for (const item of timelineItems) {
+      const annotation = timelineAnnotations.find((annotationItem) => {
+        return annotationItem.conversationId === activeConversationId && annotationItem.timelineItemId === item.id;
+      });
+      if (!annotation?.highlighted) {
+        continue;
+      }
+      const element = timelineNodeMapRef.current[item.id];
+      if (!element) {
+        continue;
+      }
+      element.setAttribute(TIMELINE_HIGHLIGHT_ATTR, "true");
+      nextHighlightedElements.push(element);
+    }
+    timelineHighlightedElementsRef.current = nextHighlightedElements;
+  }, [activeConversationId, timelineAnnotations, timelineItems]);
+
+  useEffect(() => {
+    return () => {
+      for (const element of timelineHighlightedElementsRef.current) {
+        element.removeAttribute(TIMELINE_HIGHLIGHT_ATTR);
+      }
+      timelineHighlightedElementsRef.current = [];
+    };
+  }, []);
 
   useEffect(() => {
     if (mermaidItems.length === 0) {
@@ -1598,6 +2369,7 @@ export function App(): React.ReactElement {
         title,
         content,
         tags,
+        variablePresets: [],
         createdAt: now,
         updatedAt: now
       };
@@ -1631,6 +2403,10 @@ export function App(): React.ReactElement {
       const { [snippetId]: _removed, ...rest } = previous;
       return rest;
     });
+    setPromptPresetNameDraftById((previous) => {
+      const { [snippetId]: _removed, ...rest } = previous;
+      return rest;
+    });
     if (promptVariableOpenId === snippetId) {
       setPromptVariableOpenId("");
     }
@@ -1657,6 +2433,101 @@ export function App(): React.ReactElement {
     }));
   }, []);
 
+  const savePromptVariablePreset = useCallback((snippet: PromptSnippet) => {
+    const presetNameDraft = promptPresetNameDraftById[snippet.id] ?? "";
+    const normalizedName = normalizePromptPresetName(presetNameDraft);
+    const values = normalizePromptPresetValues(promptVariableValues[snippet.id] ?? {});
+    const valueCount = Object.keys(values).length;
+    if (valueCount === 0) {
+      setPromptStatus("请先填写至少一个变量值");
+      setPromptVariableOpenId(snippet.id);
+      return;
+    }
+
+    const now = Date.now();
+    const name = normalizedName || `预设 ${new Date(now).toLocaleTimeString("zh-CN", { hour12: false })}`;
+    setPromptLibrary((previous) =>
+      previous.map((item) => {
+        if (item.id !== snippet.id) {
+          return item;
+        }
+
+        const existed = item.variablePresets.find((preset) => preset.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+        const nextPreset: PromptVariablePreset = existed
+          ? {
+              ...existed,
+              name,
+              values,
+              updatedAt: now
+            }
+          : {
+              id: createPromptPresetId(),
+              name,
+              values,
+              createdAt: now,
+              updatedAt: now
+            };
+
+        const merged = sanitizePromptVariablePresets([
+          nextPreset,
+          ...item.variablePresets.filter((preset) => preset.id !== existed?.id)
+        ]);
+        return {
+          ...item,
+          variablePresets: merged,
+          updatedAt: now
+        };
+      })
+    );
+    setPromptPresetNameDraftById((previous) => ({
+      ...previous,
+      [snippet.id]: ""
+    }));
+    setPromptStatus(`已保存变量预设：${name}`);
+  }, [promptPresetNameDraftById, promptVariableValues]);
+
+  const applyPromptVariablePreset = useCallback((snippetId: string, presetId: string) => {
+    const snippet = promptLibrary.find((item) => item.id === snippetId);
+    if (!snippet) {
+      return;
+    }
+    const preset = snippet.variablePresets.find((item) => item.id === presetId);
+    if (!preset) {
+      setPromptStatus("未找到变量预设");
+      return;
+    }
+    setPromptVariableValues((previous) => ({
+      ...previous,
+      [snippetId]: {
+        ...preset.values
+      }
+    }));
+    setPromptVariableOpenId(snippetId);
+    setPromptStatus(`已应用预设：${preset.name}`);
+  }, [promptLibrary]);
+
+  const removePromptVariablePreset = useCallback((snippetId: string, presetId: string) => {
+    let removedName = "";
+    setPromptLibrary((previous) =>
+      previous.map((item) => {
+        if (item.id !== snippetId) {
+          return item;
+        }
+        const toRemove = item.variablePresets.find((preset) => preset.id === presetId);
+        removedName = toRemove?.name ?? "";
+        if (!toRemove) {
+          return item;
+        }
+        return {
+          ...item,
+          variablePresets: item.variablePresets.filter((preset) => preset.id !== presetId),
+          updatedAt: Date.now()
+        };
+      })
+    );
+    setPromptStatus(removedName ? `已删除预设：${removedName}` : "未找到要删除的预设");
+  }, []);
+
   const insertPromptWithVariables = useCallback((snippet: PromptSnippet) => {
     const variables = extractPromptVariables(snippet.content);
     if (variables.length === 0) {
@@ -1674,6 +2545,138 @@ export function App(): React.ReactElement {
     const filled = fillPromptVariables(snippet.content, values);
     insertPrompt(filled);
   }, [insertPrompt, promptVariableValues]);
+
+  const togglePromptSelection = useCallback((promptId: string) => {
+    setSelectedPromptIds((previous) => {
+      if (previous.includes(promptId)) {
+        return previous.filter((id) => id !== promptId);
+      }
+      return [...previous, promptId];
+    });
+  }, []);
+
+  const selectAllFilteredPrompts = useCallback((ids: string[]) => {
+    if (ids.length === 0) {
+      setPromptStatus("当前筛选结果为空");
+      return;
+    }
+    setSelectedPromptIds(ids);
+    setPromptStatus(`已选择 ${ids.length} 条模板`);
+  }, []);
+
+  const clearPromptSelection = useCallback(() => {
+    setSelectedPromptIds([]);
+    setPromptStatus("已清空模板选择");
+  }, []);
+
+  const exportPromptTemplate = useCallback((snippet: PromptSnippet) => {
+    const payload: PromptTemplateTransferPayload = {
+      schemaVersion: 1,
+      app: "gpt-voyager-prompt-template",
+      exportedAt: Date.now(),
+      prompt: toPromptTemplateTransferItem(snippet)
+    };
+    const fileName = `prompt-template-${sanitizeExportFileName(snippet.title)}.json`;
+    const content = JSON.stringify(payload, null, 2);
+    downloadTextFile(fileName, content, "application/json;charset=utf-8");
+    setPromptStatus("已导出共享模板");
+  }, []);
+
+  const exportSelectedPromptTemplates = useCallback(() => {
+    if (selectedPromptIds.length === 0) {
+      setPromptStatus("请先勾选要导出的模板");
+      return;
+    }
+
+    const selectedSnippets = promptLibrary.filter((snippet) => selectedPromptIds.includes(snippet.id));
+    if (selectedSnippets.length === 0) {
+      setPromptStatus("未找到可导出的模板");
+      return;
+    }
+
+    const payload: PromptTemplateBatchTransferPayload = {
+      schemaVersion: 1,
+      app: "gpt-voyager-prompt-template-batch",
+      exportedAt: Date.now(),
+      prompts: selectedSnippets.map((snippet) => toPromptTemplateTransferItem(snippet))
+    };
+    const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
+    const fileName = `prompt-templates-batch-${stamp}.json`;
+    downloadTextFile(fileName, JSON.stringify(payload, null, 2), "application/json;charset=utf-8");
+    setPromptStatus(`已批量导出 ${selectedSnippets.length} 条模板`);
+  }, [promptLibrary, selectedPromptIds]);
+
+  const openPromptTemplateImportPicker = useCallback(() => {
+    promptTemplateFileInputRef.current?.click();
+  }, []);
+
+  const importPromptTemplates = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+
+    try {
+      const content = await file.text();
+      const templateItems = parsePromptTemplateTransferPayload(content);
+      if (templateItems.length === 0) {
+        setPromptStatus("导入失败：未识别到有效模板");
+        return;
+      }
+
+      const now = Date.now();
+      const snippets = templateItems.map((templateItem, index): PromptSnippet => {
+        const baseTimestamp = now + index;
+        const presets = sanitizePromptVariablePresets(
+          templateItem.variablePresets.map((preset, presetIndex) => ({
+            id: createPromptPresetId(),
+            name: preset.name,
+            values: preset.values,
+            createdAt: baseTimestamp + presetIndex,
+            updatedAt: baseTimestamp + presetIndex
+          }))
+        );
+        return {
+          id: createPromptId(),
+          title: templateItem.title,
+          content: templateItem.content,
+          tags: templateItem.tags,
+          variablePresets: presets,
+          createdAt: baseTimestamp,
+          updatedAt: baseTimestamp
+        };
+      });
+
+      let importedCount = 0;
+      let duplicateCount = 0;
+      setPromptLibrary((previous) => {
+        const existingKeys = new Set(
+          previous.map((item) => `${item.title.toLocaleLowerCase()}::${item.content.toLocaleLowerCase()}`)
+        );
+        const accepted: PromptSnippet[] = [];
+        for (const snippet of snippets) {
+          const dedupeKey = `${snippet.title.toLocaleLowerCase()}::${snippet.content.toLocaleLowerCase()}`;
+          if (existingKeys.has(dedupeKey)) {
+            duplicateCount += 1;
+            continue;
+          }
+          existingKeys.add(dedupeKey);
+          accepted.push(snippet);
+        }
+        importedCount = accepted.length;
+        return [...accepted, ...previous].sort((a, b) => b.updatedAt - a.updatedAt);
+      });
+
+      if (importedCount === 0) {
+        setPromptStatus(duplicateCount > 0 ? "模板已存在，未新增" : "导入失败：未识别到可用模板");
+        return;
+      }
+      setPromptStatus(duplicateCount > 0 ? `已导入 ${importedCount} 条，跳过 ${duplicateCount} 条重复` : `已导入 ${importedCount} 条模板`);
+    } catch {
+      setPromptStatus("导入失败：读取模板文件出错");
+    }
+  }, []);
 
   const exportConversationMarkdown = useCallback(() => {
     const result = exportCurrentConversationToMarkdown();
@@ -1707,14 +2710,16 @@ export function App(): React.ReactElement {
       classificationState,
       promptLibrary,
       formulaFavorites,
+      mermaidFavorites,
+      timelineAnnotations,
       settings
     });
     const content = JSON.stringify(payload, null, 2);
     downloadTextFile(createBackupFileName(), content, "application/json;charset=utf-8");
     setBackupStatus(
-      `备份已导出（会话 ${payload.data.conversationIndex.length}，提示词 ${payload.data.promptLibrary.length}，公式收藏 ${payload.data.formulaFavorites.length}）`
+      `备份已导出（会话 ${payload.data.conversationIndex.length}，提示词 ${payload.data.promptLibrary.length}，公式收藏 ${payload.data.formulaFavorites.length}，图表收藏 ${payload.data.mermaidFavorites.length}，时间线标注 ${payload.data.timelineAnnotations.length}）`
     );
-  }, [classificationState, conversationIndex, formulaFavorites, promptLibrary, settings]);
+  }, [classificationState, conversationIndex, formulaFavorites, mermaidFavorites, promptLibrary, settings, timelineAnnotations]);
 
   const openImportBackupPicker = useCallback(() => {
     backupFileInputRef.current?.click();
@@ -1727,7 +2732,7 @@ export function App(): React.ReactElement {
       return;
     }
 
-    if (!(indexReady && classificationReady && promptReady && formulaFavoriteReady && settingsReady)) {
+    if (!(indexReady && classificationReady && promptReady && formulaFavoriteReady && mermaidFavoriteReady && timelineAnnotationReady && settingsReady)) {
       setBackupStatus("数据尚未初始化完成，请稍后再导入");
       return;
     }
@@ -1744,18 +2749,29 @@ export function App(): React.ReactElement {
       const nextClassificationState = parsed.payload.data.classificationState;
       const nextPromptLibrary = parsed.payload.data.promptLibrary;
       const nextFormulaFavorites = parsed.payload.data.formulaFavorites;
+      const nextMermaidFavorites = parsed.payload.data.mermaidFavorites;
+      const nextTimelineAnnotations = parsed.payload.data.timelineAnnotations;
       const nextSettings = parsed.payload.data.settings;
 
       setConversationIndex(nextConversationIndex);
       setClassificationState(nextClassificationState);
       setPromptLibrary(nextPromptLibrary);
       setFormulaFavorites(nextFormulaFavorites);
+      setMermaidFavorites(nextMermaidFavorites);
+      setTimelineAnnotations(nextTimelineAnnotations);
       setSettings(nextSettings);
       setFolderFilter("all");
       setTagFilter("all");
       setPromptTagFilter("all");
+      setTimelineTagFilter("all");
       setPromptQuery("");
+      setSelectedPromptIds([]);
+      setTimelineQuery("");
+      setTimelineRoleFilter("all");
+      setTimelineTagEditorOpenId("");
+      setTimelineTagDraftById({});
       setFormulaFavoriteQuery("");
+      setMermaidFavoriteQuery("");
       setSelectedConversationIds([]);
       setBatchFolderId("");
       setBatchTagId("");
@@ -1768,23 +2784,25 @@ export function App(): React.ReactElement {
         saveClassificationState(nextClassificationState),
         savePromptLibrary(nextPromptLibrary),
         saveFormulaFavorites(nextFormulaFavorites),
+        saveMermaidFavorites(nextMermaidFavorites),
+        saveTimelineAnnotations(nextTimelineAnnotations),
         saveUserSettings(nextSettings)
       ]);
 
       setBackupStatus(
-        `备份已导入（会话 ${nextConversationIndex.length}，提示词 ${nextPromptLibrary.length}，公式收藏 ${nextFormulaFavorites.length}）`
+        `备份已导入（会话 ${nextConversationIndex.length}，提示词 ${nextPromptLibrary.length}，公式收藏 ${nextFormulaFavorites.length}，图表收藏 ${nextMermaidFavorites.length}，时间线标注 ${nextTimelineAnnotations.length}）`
       );
     } catch {
       setBackupStatus("导入失败：读取文件时发生错误");
     }
-  }, [classificationReady, formulaFavoriteReady, indexReady, promptReady, settingsReady]);
+  }, [classificationReady, formulaFavoriteReady, indexReady, mermaidFavoriteReady, promptReady, settingsReady, timelineAnnotationReady]);
 
   useEffect(() => {
     if (!settings.formulaClickCopyEnabled) {
       return;
     }
 
-    const onDocumentClick = (event: MouseEvent) => {
+    const onDocumentClick = async (event: MouseEvent) => {
       const host = document.getElementById(EXTENSION_HOST_ID);
       if (host && event.target instanceof Node && host.contains(event.target)) {
         return;
@@ -1795,25 +2813,115 @@ export function App(): React.ReactElement {
         return;
       }
 
-      copyFormulaTex(extracted.tex, `页面点击 · ${formulaDisplayLabel(extracted.displayMode)}`);
+      const result = await copyWordMathSource(extracted.mathml, extracted.tex);
+      if (result === "failed") {
+        setFormulaStatus("页面点击复制失败");
+        return;
+      }
 
-      const node = extracted.element;
-      const previousOutline = node.style.outline;
-      const previousOutlineOffset = node.style.outlineOffset;
-      const previousTransition = node.style.transition;
-      node.style.transition = "outline-color 200ms ease";
-      node.style.outline = "2px solid #10a37f";
-      node.style.outlineOffset = "2px";
-      window.setTimeout(() => {
-        node.style.outline = previousOutline;
-        node.style.outlineOffset = previousOutlineOffset;
-        node.style.transition = previousTransition;
-      }, 680);
+      if (result === "fallback_tex") {
+        notifyFormulaCopied(extracted.tex, `页面点击 · ${formulaDisplayLabel(extracted.displayMode)} · LaTeX 回退`);
+        setFormulaStatus("已复制 LaTeX（Word 失败回退）");
+        showPageFormulaCopyFeedback(extracted.element, "LaTeX");
+        return;
+      }
+
+      notifyFormulaCopied(extracted.tex, `页面点击 · ${formulaDisplayLabel(extracted.displayMode)} · Word(MathML)`);
+      setFormulaStatus("已复制 Word 公式（MathML）");
+      showPageFormulaCopyFeedback(extracted.element, "Word");
     };
 
     document.addEventListener("click", onDocumentClick, true);
     return () => document.removeEventListener("click", onDocumentClick, true);
-  }, [copyFormulaTex, settings.formulaClickCopyEnabled]);
+  }, [notifyFormulaCopied, settings.formulaClickCopyEnabled]);
+
+  useEffect(() => {
+    const widthPercent = clampChatContentWidthPercent(settings.chatContentWidthPercent);
+    const widthVw = `${widthPercent}vw`;
+    const composerWidth = `${Math.min(98, widthPercent + 2)}vw`;
+
+    const rootStyle = document.documentElement?.style;
+    rootStyle?.setProperty("--thread-content-max-width", widthVw);
+    rootStyle?.setProperty("--composer-max-width", composerWidth);
+    document.body?.style.setProperty("--thread-content-max-width", widthVw);
+    document.body?.style.setProperty("--composer-max-width", composerWidth);
+
+    const css = `
+:root {
+  --thread-content-max-width: ${widthVw};
+  --composer-max-width: ${composerWidth};
+}
+main :is(div,section,article)[class*="max-w-"] {
+  max-width: min(${widthVw}, 1820px) !important;
+}
+form :is(div,section,article)[class*="max-w-"] {
+  max-width: min(${composerWidth}, 1820px) !important;
+}
+main [data-testid="conversation-turn"] > div > div {
+  max-width: min(${widthVw}, 1820px) !important;
+  width: min(${widthVw}, 1820px) !important;
+}
+main [data-testid="conversation-turn"] [class*="max-w"] {
+  max-width: min(${widthVw}, 1820px) !important;
+}
+main [data-testid="composer"] :is(div,section,article)[class*="max-w"] {
+  max-width: min(${composerWidth}, 1820px) !important;
+  width: min(${composerWidth}, 1820px) !important;
+}
+main form [class*="max-w"] {
+  max-width: min(${composerWidth}, 1820px) !important;
+}
+`;
+
+    let style = document.getElementById(CHAT_WIDTH_STYLE_ID) as HTMLStyleElement | null;
+    if (!style) {
+      style = document.createElement("style");
+      style.id = CHAT_WIDTH_STYLE_ID;
+      document.head?.appendChild(style);
+    }
+    style.textContent = css;
+  }, [settings.chatContentWidthPercent]);
+
+  useEffect(() => {
+    return () => {
+      document.getElementById(CHAT_WIDTH_STYLE_ID)?.remove();
+      document.documentElement?.style.removeProperty("--thread-content-max-width");
+      document.documentElement?.style.removeProperty("--composer-max-width");
+      document.body?.style.removeProperty("--thread-content-max-width");
+      document.body?.style.removeProperty("--composer-max-width");
+    };
+  }, []);
+
+  useEffect(() => {
+    if (collapsed) {
+      return;
+    }
+
+    const onDocumentPointerDown = (event: PointerEvent) => {
+      if (event.button !== 0) {
+        return;
+      }
+
+      const host = document.getElementById(EXTENSION_HOST_ID);
+      if (!host) {
+        return;
+      }
+
+      const composedPath = typeof event.composedPath === "function" ? event.composedPath() : [];
+      if (composedPath.includes(host)) {
+        return;
+      }
+
+      if (event.target instanceof Node && host.contains(event.target)) {
+        return;
+      }
+
+      setCollapsed(true);
+    };
+
+    document.addEventListener("pointerdown", onDocumentPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onDocumentPointerDown, true);
+  }, [collapsed]);
 
   const panelStyle = useMemo<React.CSSProperties>(
     () => ({
@@ -1892,6 +3000,114 @@ export function App(): React.ReactElement {
     });
   }, [classificationState.metaByConversationId, conversationIndex, folderFilter, normalizedQuery, starredOnly, tagFilter]);
 
+  const orderedConversations = useMemo(() => {
+    const next = [...filteredConversations];
+    if (settings.conversationSortMode === "title_asc") {
+      next.sort((left, right) => {
+        const titleResult = left.title.localeCompare(right.title, "zh-CN");
+        if (titleResult !== 0) {
+          return titleResult;
+        }
+        return right.lastSeenAt - left.lastSeenAt;
+      });
+      return next;
+    }
+    next.sort((left, right) => {
+      const lastSeenResult = right.lastSeenAt - left.lastSeenAt;
+      if (lastSeenResult !== 0) {
+        return lastSeenResult;
+      }
+      return left.title.localeCompare(right.title, "zh-CN");
+    });
+    return next;
+  }, [filteredConversations, settings.conversationSortMode]);
+
+  const conversationVirtualRowHeight =
+    settings.conversationCardDensity === "compact" ? CONVERSATION_ROW_HEIGHT_COMPACT : CONVERSATION_ROW_HEIGHT_STANDARD;
+
+  const conversationVirtualWindow = useMemo(() => {
+    if (orderedConversations.length === 0) {
+      return {
+        topSpacerHeight: 0,
+        bottomSpacerHeight: 0,
+        visibleConversations: orderedConversations
+      };
+    }
+
+    const viewportHeight = conversationListHeight > 0 ? conversationListHeight : CONVERSATION_LIST_FALLBACK_HEIGHT;
+    const visibleCount = Math.max(1, Math.ceil(viewportHeight / conversationVirtualRowHeight));
+    const startIndex = Math.max(
+      0,
+      Math.floor(conversationListScrollTop / conversationVirtualRowHeight) - CONVERSATION_VIRTUAL_OVERSCAN
+    );
+    const endIndex = Math.min(
+      orderedConversations.length,
+      startIndex + visibleCount + CONVERSATION_VIRTUAL_OVERSCAN * 2
+    );
+    const topSpacerHeight = startIndex * conversationVirtualRowHeight;
+    const bottomSpacerHeight = Math.max(
+      0,
+      (orderedConversations.length - endIndex) * conversationVirtualRowHeight
+    );
+
+    return {
+      topSpacerHeight,
+      bottomSpacerHeight,
+      visibleConversations: orderedConversations.slice(startIndex, endIndex)
+    };
+  }, [conversationListHeight, conversationListScrollTop, conversationVirtualRowHeight, orderedConversations]);
+
+  const syncConversationListViewport = useCallback(() => {
+    const listElement = conversationListRef.current;
+    if (!listElement) {
+      return;
+    }
+    setConversationListHeight(listElement.clientHeight);
+    setConversationListScrollTop(listElement.scrollTop);
+  }, []);
+
+  useEffect(() => {
+    if (activeView !== "conversations") {
+      return;
+    }
+
+    const listElement = conversationListRef.current;
+    if (!listElement) {
+      return;
+    }
+
+    syncConversationListViewport();
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(() => {
+            syncConversationListViewport();
+          });
+    resizeObserver?.observe(listElement);
+
+    const onWindowResize = () => {
+      syncConversationListViewport();
+    };
+    window.addEventListener("resize", onWindowResize);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", onWindowResize);
+    };
+  }, [activeView, collapsed, syncConversationListViewport]);
+
+  useEffect(() => {
+    const listElement = conversationListRef.current;
+    if (listElement) {
+      listElement.scrollTop = 0;
+    }
+    setConversationListScrollTop(0);
+  }, [folderFilter, normalizedQuery, settings.conversationCardDensity, settings.conversationSortMode, starredOnly, tagFilter]);
+
+  const handleConversationListScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
+    setConversationListScrollTop(event.currentTarget.scrollTop);
+  }, []);
+
   const activateStarredOnly = useCallback(() => {
     setFolderFilter("all");
     setTagFilter("all");
@@ -1937,10 +3153,10 @@ export function App(): React.ReactElement {
   }, []);
 
   const selectAllFilteredConversations = useCallback(() => {
-    setSelectedConversationIds(filteredConversations.map((item) => item.id));
+    setSelectedConversationIds(orderedConversations.map((item) => item.id));
     setBatchPanelExpanded(true);
-    setConversationStatus(`已选择当前筛选的 ${filteredConversations.length} 条会话`);
-  }, [filteredConversations]);
+    setConversationStatus(`已选择当前筛选的 ${orderedConversations.length} 条会话`);
+  }, [orderedConversations]);
 
   const clearConversationSelection = useCallback(() => {
     setSelectedConversationIds([]);
@@ -2159,22 +3375,74 @@ export function App(): React.ReactElement {
     });
   }, [normalizedPromptQuery, promptLibrary, promptTagFilter]);
 
+  const selectedPromptIdSet = useMemo(() => new Set(selectedPromptIds), [selectedPromptIds]);
+
+  const filteredPromptIds = useMemo(() => filteredPromptLibrary.map((item) => item.id), [filteredPromptLibrary]);
+
   const normalizedTimelineQuery = timelineQuery.trim().toLowerCase();
+
+  const currentConversationTimelineAnnotations = useMemo(() => {
+    if (!activeConversationId) {
+      return [];
+    }
+    return timelineAnnotations.filter((item) => item.conversationId === activeConversationId);
+  }, [activeConversationId, timelineAnnotations]);
+
+  const timelineAnnotationByItemId = useMemo(() => {
+    const map = new Map<string, TimelineNodeAnnotation>();
+    for (const annotation of currentConversationTimelineAnnotations) {
+      map.set(annotation.timelineItemId, annotation);
+    }
+    return map;
+  }, [currentConversationTimelineAnnotations]);
+
+  const timelineTagOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const annotation of currentConversationTimelineAnnotations) {
+      for (const tag of annotation.tags) {
+        set.add(tag);
+      }
+    }
+    return Array.from(set.values()).sort((a, b) => a.localeCompare(b, "zh-CN"));
+  }, [currentConversationTimelineAnnotations]);
+
+  const highlightedTimelineCount = useMemo(() => {
+    return currentConversationTimelineAnnotations.filter((item) => item.highlighted).length;
+  }, [currentConversationTimelineAnnotations]);
+
+  const taggedTimelineCount = useMemo(() => {
+    return currentConversationTimelineAnnotations.filter((item) => item.tags.length > 0).length;
+  }, [currentConversationTimelineAnnotations]);
 
   const filteredTimelineItems = useMemo(() => {
     return timelineItems.filter((item) => {
       if (timelineRoleFilter !== "all" && item.role !== timelineRoleFilter) {
         return false;
       }
+      const annotation = timelineAnnotationByItemId.get(item.id);
+      if (timelineTagFilter !== "all" && !annotation?.tags.includes(timelineTagFilter)) {
+        return false;
+      }
       if (!normalizedTimelineQuery) {
         return true;
       }
+      const tagsText = annotation?.tags.join(" ").toLowerCase() ?? "";
       return (
         item.preview.toLowerCase().includes(normalizedTimelineQuery) ||
-        timelineRoleLabel(item.role).toLowerCase().includes(normalizedTimelineQuery)
+        timelineRoleLabel(item.role).toLowerCase().includes(normalizedTimelineQuery) ||
+        tagsText.includes(normalizedTimelineQuery)
       );
     });
-  }, [normalizedTimelineQuery, timelineItems, timelineRoleFilter]);
+  }, [normalizedTimelineQuery, timelineAnnotationByItemId, timelineItems, timelineRoleFilter, timelineTagFilter]);
+
+  useEffect(() => {
+    if (timelineTagFilter === "all") {
+      return;
+    }
+    if (!timelineTagOptions.includes(timelineTagFilter)) {
+      setTimelineTagFilter("all");
+    }
+  }, [timelineTagFilter, timelineTagOptions]);
 
   const exportTimelineByNodes = useCallback((format: "markdown" | "html") => {
     if (!activeConversationId) {
@@ -2201,6 +3469,7 @@ export function App(): React.ReactElement {
       }
       nodes.push({
         item,
+        annotation: timelineAnnotationByItemId.get(item.id),
         content
       });
     }
@@ -2214,15 +3483,15 @@ export function App(): React.ReactElement {
     const url = `${window.location.origin}${window.location.pathname}`;
     const content =
       format === "html"
-        ? buildTimelineHtml(title, url, nodes, timelineQuery, timelineRoleFilter)
-        : buildTimelineMarkdown(title, url, nodes, timelineQuery, timelineRoleFilter);
+        ? buildTimelineHtml(title, url, nodes, timelineQuery, timelineRoleFilter, timelineTagFilter)
+        : buildTimelineMarkdown(title, url, nodes, timelineQuery, timelineRoleFilter, timelineTagFilter);
     const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
     const extension = format === "html" ? "html" : "md";
     const mimeType = format === "html" ? "text/html;charset=utf-8" : "text/markdown;charset=utf-8";
     const fileName = `${sanitizeExportFileName(title)}_timeline_${stamp}.${extension}`;
     downloadTextFile(fileName, content, mimeType);
     setTimelineStatus(`时间线 ${format === "html" ? "HTML" : "Markdown"} 已导出（${nodes.length} 条）`);
-  }, [activeConversationId, filteredTimelineItems, timelineQuery, timelineRoleFilter]);
+  }, [activeConversationId, filteredTimelineItems, timelineAnnotationByItemId, timelineQuery, timelineRoleFilter, timelineTagFilter]);
 
   const exportTimelineByDefault = useCallback(() => {
     if (settings.defaultExportFormat === "html") {
@@ -2274,6 +3543,14 @@ export function App(): React.ReactElement {
 
   const normalizedMermaidQuery = mermaidQuery.trim().toLowerCase();
 
+  const mermaidFavoriteByKey = useMemo(() => {
+    const map = new Map<string, MermaidFavorite>();
+    for (const item of mermaidFavorites) {
+      map.set(buildMermaidFavoriteKey(item.sourceConversationId, item.code), item);
+    }
+    return map;
+  }, [mermaidFavorites]);
+
   const filteredMermaidItems = useMemo(() => {
     return mermaidItems.filter((item) => {
       if (!normalizedMermaidQuery) {
@@ -2285,6 +3562,21 @@ export function App(): React.ReactElement {
       );
     });
   }, [mermaidItems, normalizedMermaidQuery]);
+
+  const normalizedMermaidFavoriteQuery = mermaidFavoriteQuery.trim().toLowerCase();
+
+  const filteredMermaidFavorites = useMemo(() => {
+    return mermaidFavorites.filter((item) => {
+      if (!normalizedMermaidFavoriteQuery) {
+        return true;
+      }
+      return (
+        item.alias.toLowerCase().includes(normalizedMermaidFavoriteQuery) ||
+        item.code.toLowerCase().includes(normalizedMermaidFavoriteQuery) ||
+        item.sourceConversationTitle.toLowerCase().includes(normalizedMermaidFavoriteQuery)
+      );
+    });
+  }, [mermaidFavorites, normalizedMermaidFavoriteQuery]);
 
   return (
     <div className="gv-root">
@@ -2445,7 +3737,7 @@ export function App(): React.ReactElement {
             </div>
             <p className="gv-metric">
               {activeConversationId
-                ? `当前会话共 ${timelineItems.length} 条消息，可点击直接定位。`
+                ? `当前会话共 ${timelineItems.length} 条消息，可点击直接定位；高亮 ${highlightedTimelineCount} 条，标签标注 ${taggedTimelineCount} 条。`
                 : "请先打开一个会话详情页（/c/...）再使用时间线。"}
             </p>
             {timelineStatus ? <p className="gv-export-status">{timelineStatus}</p> : null}
@@ -2462,22 +3754,39 @@ export function App(): React.ReactElement {
                   placeholder="搜索时间线（按消息内容关键词）"
                   aria-label="搜索时间线"
                 />
-                <div className="gv-filter-row gv-filter-row-compact">
+                <div className="gv-filter-row">
                   <InlineSelect
                     ariaLabel="筛选角色"
                     value={timelineRoleFilter}
                     options={timelineRoleFilterOptions}
                     onChange={setTimelineRoleFilter}
                   />
+                  <select
+                    className="gv-select"
+                    value={timelineTagFilter}
+                    onChange={(event) => setTimelineTagFilter(event.target.value)}
+                    aria-label="筛选时间线标签"
+                  >
+                    <option value="all">全部标签</option>
+                    {timelineTagOptions.map((tag) => (
+                      <option key={tag} value={tag}>
+                        {tag}
+                      </option>
+                    ))}
+                  </select>
                   <button
                     className="gv-mini-btn"
                     type="button"
                     onClick={() => {
                       setTimelineQuery("");
                       setTimelineRoleFilter("all");
+                      setTimelineTagFilter("all");
                     }}
                   >
                     清空筛选
+                  </button>
+                  <button className="gv-mini-btn gv-mini-btn-subtle" type="button" onClick={clearConversationTimelineAnnotations}>
+                    清空标注
                   </button>
                 </div>
 
@@ -2485,20 +3794,98 @@ export function App(): React.ReactElement {
                   {filteredTimelineItems.length === 0 ? (
                     <div className="gv-empty">没有匹配的时间线节点。</div>
                   ) : (
-                    filteredTimelineItems.map((item) => (
-                      <button
-                        key={item.id}
-                        className={`gv-timeline-item ${timelineActiveId === item.id ? "gv-timeline-item-active" : ""}`}
-                        type="button"
-                        onClick={() => jumpToTimelineItem(item.id)}
-                      >
-                        <span className="gv-timeline-head">
-                          <span className={`gv-role-badge gv-role-${item.role}`}>{timelineRoleLabel(item.role)}</span>
-                          <span>{`第 ${item.index} 条 · ${item.charCount} 字`}</span>
-                        </span>
-                        <span className="gv-timeline-preview">{item.preview}</span>
-                      </button>
-                    ))
+                    filteredTimelineItems.map((item) => {
+                      const annotation = timelineAnnotationByItemId.get(item.id);
+                      const editorOpen = timelineTagEditorOpenId === item.id;
+                      return (
+                        <div
+                          key={item.id}
+                          className={`gv-timeline-item ${timelineActiveId === item.id ? "gv-timeline-item-active" : ""}`}
+                        >
+                          <button className="gv-timeline-jump" type="button" onClick={() => jumpToTimelineItem(item.id)}>
+                            <span className="gv-timeline-head">
+                              <span className={`gv-role-badge gv-role-${item.role}`}>{timelineRoleLabel(item.role)}</span>
+                              <span>{`第 ${item.index} 条 · ${item.charCount} 字`}</span>
+                              {annotation?.highlighted ? <span className="gv-timeline-highlight-badge">已高亮</span> : null}
+                            </span>
+                            <span className="gv-timeline-preview">{item.preview}</span>
+                          </button>
+
+                          {annotation && annotation.tags.length > 0 ? (
+                            <div className="gv-timeline-tags">
+                              {annotation.tags.map((tag) => (
+                                <button
+                                  key={`${item.id}_${tag}`}
+                                  className={`gv-tag ${timelineTagFilter === tag ? "gv-tag-active" : ""}`}
+                                  type="button"
+                                  onClick={() => setTimelineTagFilter(tag)}
+                                >
+                                  {tag}
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+
+                          <div className="gv-btn-row gv-timeline-actions">
+                            <button className="gv-mini-btn" type="button" onClick={() => toggleTimelineHighlight(item)}>
+                              {annotation?.highlighted ? "取消高亮" : "高亮标注"}
+                            </button>
+                            <button className="gv-mini-btn gv-mini-btn-subtle" type="button" onClick={() => toggleTimelineTagEditor(item)}>
+                              {editorOpen ? "收起标签" : "标签标注"}
+                            </button>
+                          </div>
+
+                          {editorOpen ? (
+                            <div className="gv-timeline-tag-editor">
+                              <input
+                                className="gv-input"
+                                type="text"
+                                value={timelineTagDraftById[item.id] ?? ""}
+                                onChange={(event) =>
+                                  setTimelineTagDraftById((previous) => ({
+                                    ...previous,
+                                    [item.id]: event.target.value
+                                  }))
+                                }
+                                placeholder="标签（逗号分隔）"
+                                aria-label={`时间线标签 第${item.index}条`}
+                              />
+                              <div className="gv-btn-row">
+                                <button className="gv-mini-btn" type="button" onClick={() => saveTimelineTags(item)}>
+                                  保存标签
+                                </button>
+                                <button
+                                  className="gv-mini-btn gv-mini-btn-subtle"
+                                  type="button"
+                                  onClick={() =>
+                                    setTimelineTagDraftById((previous) => ({
+                                      ...previous,
+                                      [item.id]: ""
+                                    }))
+                                  }
+                                >
+                                  清空输入
+                                </button>
+                              </div>
+                              {annotation && annotation.tags.length > 0 ? (
+                                <div className="gv-timeline-tags">
+                                  {annotation.tags.map((tag) => (
+                                    <button
+                                      key={`${item.id}_remove_${tag}`}
+                                      className="gv-tag"
+                                      type="button"
+                                      onClick={() => removeTimelineTag(item, tag)}
+                                    >
+                                      {tag} ×
+                                    </button>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })
                   )}
                 </div>
               </>
@@ -2520,7 +3907,7 @@ export function App(): React.ReactElement {
                 : "请先打开一个会话详情页（/c/...）再使用公式工作台。"}
             </p>
             {settings.formulaClickCopyEnabled ? (
-              <p className="gv-metric">已开启“点击页面公式自动复制 TeX”。</p>
+              <p className="gv-metric">已开启“点击页面公式自动复制（Word 优先，失败回退 LaTeX）”。</p>
             ) : null}
             {formulaStatus ? <p className="gv-export-status">{formulaStatus}</p> : null}
             {formulaCopiedTex ? (
@@ -2681,7 +4068,7 @@ export function App(): React.ReactElement {
             </div>
             <p className="gv-metric">
               {activeConversationId
-                ? `当前会话检测到 ${mermaidItems.length} 个 Mermaid 图表，可预览、复制源码并定位消息。`
+                ? `当前会话检测到 ${mermaidItems.length} 个 Mermaid 图表，可预览、复制、收藏并导出。`
                 : "请先打开一个会话详情页（/c/...）再使用 Mermaid 工作台。"}
             </p>
             {mermaidStatus ? <p className="gv-export-status">{mermaidStatus}</p> : null}
@@ -2705,6 +4092,11 @@ export function App(): React.ReactElement {
                     filteredMermaidItems.map((item) => {
                       const svg = mermaidSvgById[item.id];
                       const errorText = mermaidErrorById[item.id];
+                      const favorite =
+                        activeConversationId
+                          ? mermaidFavoriteByKey.get(buildMermaidFavoriteKey(activeConversationId, item.code))
+                          : undefined;
+                      const exportBaseName = `mermaid_${item.messageIndex}_${item.preview}`;
                       return (
                         <div
                           key={item.id}
@@ -2713,6 +4105,7 @@ export function App(): React.ReactElement {
                           <div className="gv-mermaid-head">
                             <span className="gv-formula-badge">Mermaid</span>
                             <span className="gv-formula-meta">{`消息 ${item.messageIndex} · ${item.preview}`}</span>
+                            {favorite ? <span className="gv-formula-fav-tip">已收藏</span> : null}
                           </div>
                           <code className="gv-formula-tex">{item.code}</code>
                           <div className="gv-mermaid-canvas-wrap">
@@ -2731,14 +4124,96 @@ export function App(): React.ReactElement {
                             <button className="gv-mini-btn" type="button" onClick={() => copyMermaidCode(item.code)}>
                               复制源码
                             </button>
+                            <button className="gv-mini-btn" type="button" onClick={() => exportMermaidSource(item.code, exportBaseName)}>
+                              导出源码
+                            </button>
+                            <button className="gv-mini-btn" type="button" onClick={() => void exportMermaidSvg(item.code, exportBaseName, svg)}>
+                              导出 SVG
+                            </button>
+                            <button className="gv-mini-btn" type="button" onClick={() => void exportMermaidHtml(item.code, exportBaseName, svg)}>
+                              导出 HTML
+                            </button>
                             <button className="gv-mini-btn" type="button" onClick={() => jumpToMermaidItem(item.id)}>
                               定位消息
+                            </button>
+                            <button
+                              className={`gv-mini-btn ${favorite ? "gv-mini-btn-active" : ""}`}
+                              type="button"
+                              onClick={() => toggleMermaidFavorite(item)}
+                            >
+                              {favorite ? "取消收藏" : "收藏图表"}
                             </button>
                           </div>
                         </div>
                       );
                     })
                   )}
+                </div>
+
+                <div className="gv-mermaid-favorites">
+                  <div className="gv-section-title-row">
+                    <h3>图表收藏</h3>
+                    <span className="gv-inline-empty">{`共 ${mermaidFavorites.length} 条`}</span>
+                  </div>
+                  <input
+                    className="gv-input"
+                    type="search"
+                    value={mermaidFavoriteQuery}
+                    onChange={(event) => setMermaidFavoriteQuery(event.target.value)}
+                    placeholder="搜索别名 / 源码 / 会话标题"
+                    aria-label="搜索图表收藏"
+                  />
+                  <div className="gv-mermaid-fav-list">
+                    {filteredMermaidFavorites.length === 0 ? (
+                      <div className="gv-empty">暂无图表收藏，先在上方点击“收藏图表”。</div>
+                    ) : (
+                      filteredMermaidFavorites.map((favorite) => {
+                        const normalizedFavoriteCode = normalizeMermaidCodeForMatch(favorite.code);
+                        const matchedItem =
+                          favorite.sourceConversationId === activeConversationId
+                            ? mermaidItems.find((item) => normalizeMermaidCodeForMatch(item.code) === normalizedFavoriteCode)
+                            : undefined;
+                        const favoriteSvg = matchedItem ? mermaidSvgById[matchedItem.id] : undefined;
+                        const exportBaseName = `mermaid_favorite_${favorite.alias || favorite.preview}`;
+                        return (
+                          <div className="gv-mermaid-fav-item" key={favorite.id}>
+                            <div className="gv-mermaid-fav-head">
+                              <input
+                                className="gv-input gv-mermaid-alias-input"
+                                type="text"
+                                value={favorite.alias}
+                                onChange={(event) => updateMermaidFavoriteAlias(favorite.id, event.target.value)}
+                                placeholder="图表别名"
+                                aria-label={`图表别名 ${favorite.alias}`}
+                              />
+                              <span className="gv-formula-meta">{`消息 ${favorite.sourceMessageIndex || "-"} · ${favorite.sourceConversationTitle}`}</span>
+                            </div>
+                            <code className="gv-formula-tex">{favorite.code}</code>
+                            <div className="gv-btn-row">
+                              <button className="gv-mini-btn" type="button" onClick={() => copyMermaidCode(favorite.code)}>
+                                复制源码
+                              </button>
+                              <button className="gv-mini-btn" type="button" onClick={() => exportMermaidSource(favorite.code, exportBaseName)}>
+                                导出源码
+                              </button>
+                              <button className="gv-mini-btn" type="button" onClick={() => void exportMermaidSvg(favorite.code, exportBaseName, favoriteSvg)}>
+                                导出 SVG
+                              </button>
+                              <button className="gv-mini-btn" type="button" onClick={() => void exportMermaidHtml(favorite.code, exportBaseName, favoriteSvg)}>
+                                导出 HTML
+                              </button>
+                              <button className="gv-mini-btn" type="button" onClick={() => locateMermaidFavorite(favorite)}>
+                                {favorite.sourceConversationId === activeConversationId ? "定位来源" : "打开来源会话"}
+                              </button>
+                              <button className="gv-mini-btn gv-danger-btn" type="button" onClick={() => removeMermaidFavorite(favorite.id)}>
+                                删除收藏
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
                 </div>
               </>
             )}
@@ -2900,6 +4375,41 @@ export function App(): React.ReactElement {
               </button>
             </div>
 
+            <div className="gv-order-density-row">
+              <label className="gv-order-density-item">
+                <span>排序</span>
+                <select
+                  className="gv-select"
+                  value={settings.conversationSortMode}
+                  onChange={(event) =>
+                    setSettings((previous) => ({
+                      ...previous,
+                      conversationSortMode: event.target.value as ConversationSortMode
+                    }))
+                  }
+                >
+                  <option value="recent_desc">按最近活跃</option>
+                  <option value="title_asc">按标题 A-Z</option>
+                </select>
+              </label>
+              <label className="gv-order-density-item">
+                <span>卡片密度</span>
+                <select
+                  className="gv-select"
+                  value={settings.conversationCardDensity}
+                  onChange={(event) =>
+                    setSettings((previous) => ({
+                      ...previous,
+                      conversationCardDensity: event.target.value as ConversationCardDensity
+                    }))
+                  }
+                >
+                  <option value="standard">标准</option>
+                  <option value="compact">紧凑</option>
+                </select>
+              </label>
+            </div>
+
             {showAdvancedFilters ? (
               <div className="gv-filter-advanced">
                 <select className="gv-select" value={folderFilter} onChange={(event) => setFolderFilter(event.target.value)}>
@@ -2997,8 +4507,12 @@ export function App(): React.ReactElement {
               )}
             </div>
 
-            <div className="gv-list">
-              {filteredConversations.length === 0 ? (
+            <div
+              className={`gv-list ${settings.conversationCardDensity === "compact" ? "gv-list-compact" : ""}`}
+              ref={conversationListRef}
+              onScroll={handleConversationListScroll}
+            >
+              {orderedConversations.length === 0 ? (
                 <div className="gv-empty">
                   {conversationIndex.length === 0
                     ? "暂无会话索引。请打开左侧聊天列表后稍等自动采集。"
@@ -3007,13 +4521,24 @@ export function App(): React.ReactElement {
                       : "没有匹配结果，试试其他关键词或分类筛选。"}
                 </div>
               ) : (
-                filteredConversations.map((item) => {
+                <>
+                {conversationVirtualWindow.topSpacerHeight > 0 ? (
+                  <div
+                    className="gv-virtual-spacer"
+                    style={{ height: `${conversationVirtualWindow.topSpacerHeight}px` }}
+                    aria-hidden="true"
+                  />
+                ) : null}
+                {conversationVirtualWindow.visibleConversations.map((item) => {
                   const isActive = item.id === activeConversationId;
                   const meta = classificationState.metaByConversationId[item.id] ?? EMPTY_META;
                   const selectedForBatch = selectedConversationIdSet.has(item.id);
 
                   return (
-                    <div key={item.id} className={`gv-item ${isActive ? "gv-item-active" : ""}`}>
+                    <div
+                      key={item.id}
+                      className={`gv-item ${settings.conversationCardDensity === "compact" ? "gv-item-compact" : ""} ${isActive ? "gv-item-active" : ""}`}
+                    >
                       <div className="gv-item-top">
                         <label className="gv-check-wrap">
                           <input
@@ -3089,7 +4614,15 @@ export function App(): React.ReactElement {
                       />
                     </div>
                   );
-                })
+                })}
+                {conversationVirtualWindow.bottomSpacerHeight > 0 ? (
+                  <div
+                    className="gv-virtual-spacer"
+                    style={{ height: `${conversationVirtualWindow.bottomSpacerHeight}px` }}
+                    aria-hidden="true"
+                  />
+                ) : null}
+                </>
               )}
             </div>
           </section>
@@ -3101,11 +4634,29 @@ export function App(): React.ReactElement {
           <section className="gv-section gv-section-highlight">
             <p className="gv-metric">
               当前共 <strong>{promptLibrary.length}</strong> 条模板，筛选后 <strong>{filteredPromptLibrary.length}</strong> 条，插入模式为
-              <strong>{settings.promptInsertMode === "append" ? " 追加" : " 覆盖"}</strong>。
+              <strong>{settings.promptInsertMode === "append" ? " 追加" : " 覆盖"}</strong>，已选择
+              <strong>{` ${selectedPromptIds.length} `}</strong>条。
             </p>
           </section>
           <section className="gv-section">
-            <h2>提示词库</h2>
+            <div className="gv-section-title-row">
+              <h2>提示词库</h2>
+              <div className="gv-actions-inline">
+                <button className="gv-mini-btn" type="button" onClick={openPromptTemplateImportPicker}>
+                  导入共享模板
+                </button>
+                <button className="gv-mini-btn" type="button" onClick={exportSelectedPromptTemplates}>
+                  批量导出
+                </button>
+                <input
+                  ref={promptTemplateFileInputRef}
+                  className="gv-hidden-input"
+                  type="file"
+                  accept=".json,application/json"
+                  onChange={importPromptTemplates}
+                />
+              </div>
+            </div>
             <input
               className="gv-input"
               type="search"
@@ -3136,6 +4687,14 @@ export function App(): React.ReactElement {
                 }}
               >
                 清空筛选
+              </button>
+            </div>
+            <div className="gv-btn-row">
+              <button className="gv-mini-btn gv-mini-btn-subtle" type="button" onClick={() => selectAllFilteredPrompts(filteredPromptIds)}>
+                全选筛选结果
+              </button>
+              <button className="gv-mini-btn gv-mini-btn-subtle" type="button" onClick={clearPromptSelection}>
+                清空选择
               </button>
             </div>
 
@@ -3199,10 +4758,22 @@ export function App(): React.ReactElement {
                   const variables = extractPromptVariables(snippet.content);
                   const variableValues = promptVariableValues[snippet.id] ?? {};
                   const variablePanelOpen = promptVariableOpenId === snippet.id;
+                  const selectedForBatch = selectedPromptIdSet.has(snippet.id);
 
                   return (
                     <div className="gv-prompt-item" key={snippet.id}>
-                      <div className="gv-prompt-title">{snippet.title}</div>
+                      <div className="gv-prompt-head">
+                        <label className="gv-check-wrap">
+                          <input
+                            type="checkbox"
+                            checked={selectedForBatch}
+                            onChange={() => togglePromptSelection(snippet.id)}
+                            aria-label={`选择模板 ${snippet.title}`}
+                          />
+                          <span>{selectedForBatch ? "已选" : "选择"}</span>
+                        </label>
+                        <div className="gv-prompt-title">{snippet.title}</div>
+                      </div>
                       {snippet.tags.length > 0 ? (
                         <div className="gv-prompt-tags">
                           {snippet.tags.map((tag) => (
@@ -3224,6 +4795,9 @@ export function App(): React.ReactElement {
                         </button>
                         <button className="gv-mini-btn" type="button" onClick={() => insertPrompt(snippet.content)}>
                           插入
+                        </button>
+                        <button className="gv-mini-btn" type="button" onClick={() => exportPromptTemplate(snippet)}>
+                          导出模板
                         </button>
                         {variables.length > 0 ? (
                           <button
@@ -3259,6 +4833,50 @@ export function App(): React.ReactElement {
                                 />
                               </label>
                             ))}
+                          </div>
+                          <div className="gv-preset-panel">
+                            <div className="gv-preset-head">变量预设</div>
+                            {snippet.variablePresets.length === 0 ? (
+                              <p className="gv-inline-empty">暂无预设，填写变量后可保存为预设。</p>
+                            ) : (
+                              <div className="gv-preset-list">
+                                {snippet.variablePresets.map((preset) => (
+                                  <div className="gv-preset-item" key={preset.id}>
+                                    <button
+                                      className="gv-mini-btn gv-mini-btn-subtle"
+                                      type="button"
+                                      onClick={() => applyPromptVariablePreset(snippet.id, preset.id)}
+                                    >
+                                      套用：{preset.name}
+                                    </button>
+                                    <button
+                                      className="gv-mini-btn gv-danger-btn"
+                                      type="button"
+                                      onClick={() => removePromptVariablePreset(snippet.id, preset.id)}
+                                    >
+                                      删除
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            <div className="gv-form-row gv-preset-create-row">
+                              <input
+                                className="gv-input"
+                                type="text"
+                                value={promptPresetNameDraftById[snippet.id] ?? ""}
+                                placeholder="预设名称（可选）"
+                                onChange={(event) =>
+                                  setPromptPresetNameDraftById((previous) => ({
+                                    ...previous,
+                                    [snippet.id]: event.target.value
+                                  }))
+                                }
+                              />
+                              <button className="gv-mini-btn" type="button" onClick={() => savePromptVariablePreset(snippet)}>
+                                保存预设
+                              </button>
+                            </div>
                           </div>
                           <div className="gv-btn-row">
                             <button className="gv-mini-btn" type="button" onClick={() => insertPromptWithVariables(snippet)}>
@@ -3296,7 +4914,7 @@ export function App(): React.ReactElement {
               <li>打开 ChatGPT 任意页面后，右侧会出现 GPT Voyager 侧边栏入口。</li>
               <li>先在“会话工作台”点一次“重新扫描”，建立本地会话索引。</li>
               <li>通过搜索、文件夹、标签筛选找到会话，点击标题可直接打开。</li>
-              <li>在“提示词库”保存常用模板，支持复制、插入和变量填充。</li>
+              <li>在“提示词库”保存常用模板，支持复制、插入、变量填充与批量导出。</li>
               <li>在“设置中心”按你的习惯调整扫描、导出格式和快捷键。</li>
             </ol>
           </section>
@@ -3306,15 +4924,15 @@ export function App(): React.ReactElement {
             <div className="gv-guide-grid">
               <article className="gv-guide-card">
                 <h3>会话工作台</h3>
-                <p>会话搜索、星标、备注、分类筛选、批量操作、时间线跳转、公式复制与定位。</p>
+                <p>会话搜索、星标、备注、分类筛选、批量操作、时间线跳转与标签高亮标注、公式复制与定位。</p>
               </article>
               <article className="gv-guide-card">
                 <h3>提示词库</h3>
-                <p>模板增删改查、标签筛选、变量模板（{"{{变量}}"}）填充后插入对话框。</p>
+                <p>模板增删改查、标签筛选、变量模板（{"{{变量}}"}）填充、变量预设与共享模板导入导出。</p>
               </article>
               <article className="gv-guide-card">
                 <h3>设置中心</h3>
-                <p>自动扫描、导出格式、快捷键开关、点击公式复制开关、JSON 备份恢复。</p>
+                <p>自动扫描、导出格式、快捷键、聊天区宽度、点击公式复制开关与 JSON 备份恢复。</p>
               </article>
               <article className="gv-guide-card">
                 <h3>导出能力</h3>
@@ -3461,7 +5079,7 @@ export function App(): React.ReactElement {
               </label>
 
               <label className="gv-setting-item">
-                <span>点击页面公式自动复制 TeX</span>
+                <span>点击页面公式自动复制（Word 优先，失败回退 LaTeX）</span>
                 <input
                   type="checkbox"
                   checked={settings.formulaClickCopyEnabled}
@@ -3473,12 +5091,56 @@ export function App(): React.ReactElement {
                   }
                 />
               </label>
+
+              <div className="gv-setting-item gv-setting-item-stack">
+                <span>{`聊天区宽度（${settings.chatContentWidthPercent}% 视口）`}</span>
+                <input
+                  className="gv-range"
+                  type="range"
+                  min={64}
+                  max={96}
+                  step={1}
+                  value={settings.chatContentWidthPercent}
+                  onChange={(event) =>
+                    setSettings((previous) => ({
+                      ...previous,
+                      chatContentWidthPercent: clampChatContentWidthPercent(Number(event.target.value))
+                    }))
+                  }
+                />
+                <div className="gv-btn-row">
+                  <button
+                    className="gv-mini-btn gv-mini-btn-subtle"
+                    type="button"
+                    onClick={() =>
+                      setSettings((previous) => ({
+                        ...previous,
+                        chatContentWidthPercent: 78
+                      }))
+                    }
+                  >
+                    恢复默认
+                  </button>
+                  <button
+                    className="gv-mini-btn gv-mini-btn-subtle"
+                    type="button"
+                    onClick={() =>
+                      setSettings((previous) => ({
+                        ...previous,
+                        chatContentWidthPercent: 90
+                      }))
+                    }
+                  >
+                    一键加宽
+                  </button>
+                </div>
+              </div>
             </div>
           </section>
 
           <section className="gv-section">
             <h2>本地数据备份</h2>
-            <p className="gv-metric">支持将当前索引、分类、提示词、公式收藏和设置导出为 JSON，并可在本地恢复。</p>
+            <p className="gv-metric">支持将当前索引、分类、提示词、公式收藏、图表收藏、时间线标注和设置导出为 JSON，并可在本地恢复。</p>
             <div className="gv-actions-inline">
               <button className="gv-mini-btn" type="button" onClick={exportJsonBackup}>
                 导出 JSON 备份
@@ -3500,9 +5162,9 @@ export function App(): React.ReactElement {
           <section className="gv-section">
             <h2>迭代路线图</h2>
             <ul>
-              <li>P1：提示词变量预设与共享模板</li>
-              <li>P1：时间线节点标签与高亮标注</li>
-              <li>P1：Mermaid 图表收藏与导出</li>
+              <li>P1：时间线标注快捷键</li>
+              <li>P1：会话索引排序扩展（星标优先 / 备注优先）</li>
+              <li>P1：提示词库拖拽排序</li>
             </ul>
           </section>
             </>

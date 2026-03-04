@@ -1,8 +1,17 @@
+export type PromptVariablePreset = {
+  id: string;
+  name: string;
+  values: Record<string, string>;
+  createdAt: number;
+  updatedAt: number;
+};
+
 export type PromptSnippet = {
   id: string;
   title: string;
   content: string;
   tags: string[];
+  variablePresets: PromptVariablePreset[];
   createdAt: number;
   updatedAt: number;
 };
@@ -21,6 +30,79 @@ const PROMPT_VARIABLE_REGEX = /\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g;
 
 function normalizePromptTag(value: string): string {
   return value.replace(/\s+/g, " ").trim().slice(0, 24);
+}
+
+export function normalizePromptPresetName(value: string): string {
+  return value.replace(/\s+/g, " ").trim().slice(0, 32);
+}
+
+export function normalizePromptPresetValues(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  const source = value as Record<string, unknown>;
+  const normalized: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(source)) {
+    const variable = key.replace(/\s+/g, " ").trim().slice(0, 60);
+    if (!variable || typeof raw !== "string") {
+      continue;
+    }
+    const content = raw.replace(/\r\n/g, "\n").trim();
+    if (!content) {
+      continue;
+    }
+    normalized[variable] = content.slice(0, 600);
+    if (Object.keys(normalized).length >= 30) {
+      break;
+    }
+  }
+  return normalized;
+}
+
+export function sanitizePromptVariablePresets(raw: unknown): PromptVariablePreset[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  const deduplicated = new Map<string, PromptVariablePreset>();
+  for (const item of raw) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const typed = item as Partial<PromptVariablePreset>;
+    const name = normalizePromptPresetName(typeof typed.name === "string" ? typed.name : "");
+    const values = normalizePromptPresetValues(typed.values);
+    if (!name || Object.keys(values).length === 0) {
+      continue;
+    }
+
+    const now = Date.now();
+    const createdAt = typeof typed.createdAt === "number" ? typed.createdAt : now;
+    const updatedAt = typeof typed.updatedAt === "number" ? typed.updatedAt : createdAt;
+    const id =
+      typeof typed.id === "string" && typed.id.trim()
+        ? typed.id.trim()
+        : `preset_${updatedAt.toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    const next: PromptVariablePreset = {
+      id,
+      name,
+      values,
+      createdAt,
+      updatedAt
+    };
+    const dedupeKey = name.toLocaleLowerCase();
+    const existing = deduplicated.get(dedupeKey);
+    if (!existing || existing.updatedAt < next.updatedAt) {
+      deduplicated.set(dedupeKey, next);
+    }
+    if (deduplicated.size >= 12) {
+      break;
+    }
+  }
+
+  return Array.from(deduplicated.values()).sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 export function normalizePromptTags(value: unknown): string[] {
@@ -87,6 +169,11 @@ export function createPromptId(): string {
   return `prompt_${Date.now().toString(36)}_${random}`;
 }
 
+export function createPromptPresetId(): string {
+  const random = Math.random().toString(36).slice(2, 8);
+  return `preset_${Date.now().toString(36)}_${random}`;
+}
+
 export async function loadPromptLibrary(): Promise<PromptSnippet[]> {
   if (!chrome?.storage?.local) {
     return [];
@@ -115,7 +202,8 @@ export function sanitizePromptLibrary(raw: unknown): PromptSnippet[] {
     })
     .map((item) => ({
       ...item,
-      tags: normalizePromptTags(item.tags)
+      tags: normalizePromptTags(item.tags),
+      variablePresets: sanitizePromptVariablePresets((item as { variablePresets?: unknown }).variablePresets)
     }))
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }

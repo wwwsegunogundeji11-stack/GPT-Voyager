@@ -3,6 +3,7 @@
 This project now includes a static promo frontend in `site/` and an automated GitHub Pages workflow:
 
 - Site source: `site/index.html`, `site/styles.css`, `site/script.js`
+- Privacy page: `site/privacy.html`
 - Workflow: `.github/workflows/deploy-pages.yml`
 
 ## 1. Push to GitHub
@@ -29,6 +30,8 @@ When the workflow succeeds, your site URL is usually:
 For this folder name (`GPT`), a typical URL is:
 
 - `https://<github-username>.github.io/GPT/`
+- Privacy policy URL:
+  - `https://<github-username>.github.io/GPT/privacy.html`
 
 ## 4. Local Preview
 

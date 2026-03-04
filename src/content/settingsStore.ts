@@ -1,5 +1,7 @@
 export type ExportFormat = "markdown" | "html";
 export type PromptInsertMode = "append" | "replace";
+export type ConversationCardDensity = "compact" | "standard";
+export type ConversationSortMode = "recent_desc" | "title_asc";
 
 export type UserSettings = {
   version: 1;
@@ -9,6 +11,9 @@ export type UserSettings = {
   defaultExportFormat: ExportFormat;
   enableShortcuts: boolean;
   formulaClickCopyEnabled: boolean;
+  chatContentWidthPercent: number;
+  conversationCardDensity: ConversationCardDensity;
+  conversationSortMode: ConversationSortMode;
 };
 
 export const SETTINGS_STORAGE_KEY = "gpt_voyager_settings_v1";
@@ -21,7 +26,10 @@ export function createDefaultSettings(): UserSettings {
     promptInsertMode: "append",
     defaultExportFormat: "markdown",
     enableShortcuts: true,
-    formulaClickCopyEnabled: true
+    formulaClickCopyEnabled: true,
+    chatContentWidthPercent: 78,
+    conversationCardDensity: "standard",
+    conversationSortMode: "recent_desc"
   };
 }
 
@@ -38,6 +46,21 @@ function parseInsertMode(value: unknown): PromptInsertMode {
 
 function parseExportFormat(value: unknown): ExportFormat {
   return value === "html" ? "html" : "markdown";
+}
+
+function parseConversationCardDensity(value: unknown): ConversationCardDensity {
+  return value === "compact" ? "compact" : "standard";
+}
+
+function parseConversationSortMode(value: unknown): ConversationSortMode {
+  return value === "title_asc" ? "title_asc" : "recent_desc";
+}
+
+function clampChatContentWidthPercent(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 78;
+  }
+  return Math.min(96, Math.max(64, Math.round(value)));
 }
 
 export function sanitizeUserSettings(raw: unknown): UserSettings {
@@ -58,7 +81,13 @@ export function sanitizeUserSettings(raw: unknown): UserSettings {
     formulaClickCopyEnabled:
       source.formulaClickCopyEnabled !== undefined
         ? Boolean(source.formulaClickCopyEnabled)
-        : defaults.formulaClickCopyEnabled
+        : defaults.formulaClickCopyEnabled,
+    chatContentWidthPercent:
+      source.chatContentWidthPercent !== undefined
+        ? clampChatContentWidthPercent(source.chatContentWidthPercent)
+        : defaults.chatContentWidthPercent,
+    conversationCardDensity: parseConversationCardDensity(source.conversationCardDensity),
+    conversationSortMode: parseConversationSortMode(source.conversationSortMode)
   };
 }
 

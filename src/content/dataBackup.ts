@@ -15,6 +15,14 @@ import {
   type FormulaFavorite
 } from "./formulaFavoritesStore";
 import {
+  sanitizeMermaidFavorites,
+  type MermaidFavorite
+} from "./mermaidFavoritesStore";
+import {
+  sanitizeTimelineAnnotations,
+  type TimelineNodeAnnotation
+} from "./timelineAnnotationsStore";
+import {
   sanitizeUserSettings,
   type UserSettings
 } from "./settingsStore";
@@ -28,6 +36,8 @@ export type VoyagerBackupV1 = {
     classificationState: ClassificationState;
     promptLibrary: PromptSnippet[];
     formulaFavorites: FormulaFavorite[];
+    mermaidFavorites: MermaidFavorite[];
+    timelineAnnotations: TimelineNodeAnnotation[];
     settings: UserSettings;
   };
 };
@@ -41,6 +51,8 @@ export function createBackupPayload(input: {
   classificationState: ClassificationState;
   promptLibrary: PromptSnippet[];
   formulaFavorites: FormulaFavorite[];
+  mermaidFavorites: MermaidFavorite[];
+  timelineAnnotations: TimelineNodeAnnotation[];
   settings: UserSettings;
 }): VoyagerBackupV1 {
   return {
@@ -52,6 +64,8 @@ export function createBackupPayload(input: {
       classificationState: sanitizeClassificationState(input.classificationState),
       promptLibrary: sanitizePromptLibrary(input.promptLibrary),
       formulaFavorites: sanitizeFormulaFavorites(input.formulaFavorites),
+      mermaidFavorites: sanitizeMermaidFavorites(input.mermaidFavorites),
+      timelineAnnotations: sanitizeTimelineAnnotations(input.timelineAnnotations),
       settings: sanitizeUserSettings(input.settings)
     }
   };
@@ -89,6 +103,8 @@ export function parseBackupPayload(rawText: string): BackupParseResult {
         classificationState: sanitizeClassificationState(data.classificationState),
         promptLibrary: sanitizePromptLibrary(data.promptLibrary),
         formulaFavorites: sanitizeFormulaFavorites(data.formulaFavorites),
+        mermaidFavorites: sanitizeMermaidFavorites(data.mermaidFavorites),
+        timelineAnnotations: sanitizeTimelineAnnotations(data.timelineAnnotations),
         settings: sanitizeUserSettings(data.settings)
       }
     }

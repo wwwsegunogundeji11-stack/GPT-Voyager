@@ -32,6 +32,12 @@ const buildConfigs = [
 async function copyStaticFiles() {
   await mkdir(distDir, { recursive: true });
   await cp(resolve(root, "src", "manifest.json"), resolve(distDir, "manifest.json"));
+  const distIconsDir = resolve(distDir, "icons");
+  await mkdir(distIconsDir, { recursive: true });
+  const iconFiles = ["icon-16.png", "icon-32.png", "icon-48.png", "icon-128.png"];
+  await Promise.all(
+    iconFiles.map((name) => cp(resolve(root, "src", "icons", name), resolve(distIconsDir, name)))
+  );
 }
 
 async function cleanDist() {
@@ -57,4 +63,3 @@ runBuild().catch((error) => {
   console.error("[build] Failed:", error);
   process.exit(1);
 });
-
