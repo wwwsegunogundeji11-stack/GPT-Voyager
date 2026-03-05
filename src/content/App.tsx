@@ -3578,6 +3578,35 @@ main form [class*="max-w"] {
     });
   }, [mermaidFavorites, normalizedMermaidFavoriteQuery]);
 
+  const activeViewMeta = useMemo(() => {
+    if (activeView === "conversations") {
+      return {
+        kicker: "Conversation Workspace",
+        title: "会话工作台",
+        description: "索引、分类、批量操作和时间线在一个面板中完成。"
+      };
+    }
+    if (activeView === "prompts") {
+      return {
+        kicker: "Prompt Library",
+        title: "提示词库",
+        description: "模板变量、预设与导入导出，统一复用高质量提示词。"
+      };
+    }
+    if (activeView === "guide") {
+      return {
+        kicker: "Guide",
+        title: "使用说明",
+        description: "快速理解核心流程，降低上手成本。"
+      };
+    }
+    return {
+      kicker: "Settings",
+      title: "设置中心",
+      description: "按你的偏好配置扫描、导出、快捷键与面板行为。"
+    };
+  }, [activeView]);
+
   return (
     <div className="gv-root">
       <button
@@ -3592,51 +3621,59 @@ main form [class*="max-w"] {
       <aside className={`gv-panel ${collapsed ? "gv-collapsed" : ""}`} style={panelStyle}>
         <div className="gv-resize" onPointerDown={startResize} />
         <div className="gv-panel-inner">
-          <header className="gv-header">
-            <div>
-              <h1>GPT Voyager</h1>
-              <p>Workspace for ChatGPT</p>
-            </div>
-            <button
-              className="gv-text-btn"
-              type="button"
-              onClick={() => setCollapsed(true)}
-              aria-label="收起侧边栏"
-            >
-              收起
-            </button>
-          </header>
+          <div className="gv-topbar">
+            <header className="gv-header">
+              <div>
+                <h1>GPT Voyager</h1>
+                <p>Workspace for ChatGPT</p>
+              </div>
+              <button
+                className="gv-text-btn"
+                type="button"
+                onClick={() => setCollapsed(true)}
+                aria-label="收起侧边栏"
+              >
+                收起
+              </button>
+            </header>
 
-          <nav className="gv-nav" aria-label="功能分区">
-            <button
-              className={`gv-nav-btn ${activeView === "conversations" ? "gv-nav-btn-active" : ""}`}
-              type="button"
-              onClick={() => setActiveView("conversations")}
-            >
-              会话工作台
-            </button>
-            <button
-              className={`gv-nav-btn ${activeView === "prompts" ? "gv-nav-btn-active" : ""}`}
-              type="button"
-              onClick={() => setActiveView("prompts")}
-            >
-              提示词库
-            </button>
-            <button
-              className={`gv-nav-btn ${activeView === "guide" ? "gv-nav-btn-active" : ""}`}
-              type="button"
-              onClick={() => setActiveView("guide")}
-            >
-              使用说明
-            </button>
-            <button
-              className={`gv-nav-btn ${activeView === "settings" ? "gv-nav-btn-active" : ""}`}
-              type="button"
-              onClick={() => setActiveView("settings")}
-            >
-              设置中心
-            </button>
-          </nav>
+            <nav className="gv-nav" aria-label="功能分区">
+              <button
+                className={`gv-nav-btn ${activeView === "conversations" ? "gv-nav-btn-active" : ""}`}
+                type="button"
+                onClick={() => setActiveView("conversations")}
+              >
+                会话工作台
+              </button>
+              <button
+                className={`gv-nav-btn ${activeView === "prompts" ? "gv-nav-btn-active" : ""}`}
+                type="button"
+                onClick={() => setActiveView("prompts")}
+              >
+                提示词库
+              </button>
+              <button
+                className={`gv-nav-btn ${activeView === "guide" ? "gv-nav-btn-active" : ""}`}
+                type="button"
+                onClick={() => setActiveView("guide")}
+              >
+                使用说明
+              </button>
+              <button
+                className={`gv-nav-btn ${activeView === "settings" ? "gv-nav-btn-active" : ""}`}
+                type="button"
+                onClick={() => setActiveView("settings")}
+              >
+                设置中心
+              </button>
+            </nav>
+
+            <div className="gv-view-intro" aria-live="polite">
+              <span className="gv-view-kicker">{activeViewMeta.kicker}</span>
+              <h2>{activeViewMeta.title}</h2>
+              <p>{activeViewMeta.description}</p>
+            </div>
+          </div>
 
           {activeView === "conversations" ? (
             <>
