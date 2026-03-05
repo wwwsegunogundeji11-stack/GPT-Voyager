@@ -443,18 +443,50 @@ function buildConversationPdfDocument(title: string, url: string, messages: Conv
   </style>`;
   const printScript = `
   <script>
+    function waitForImages() {
+      var images = Array.prototype.slice.call(document.images || []);
+      if (images.length === 0) {
+        return Promise.resolve();
+      }
+      return Promise.all(images.map(function (img) {
+        if (img.complete) {
+          return Promise.resolve();
+        }
+        return new Promise(function (resolve) {
+          img.addEventListener("load", resolve, { once: true });
+          img.addEventListener("error", resolve, { once: true });
+        });
+      }));
+    }
+
     window.addEventListener("load", function () {
-      setTimeout(function () {
+      waitForImages().finally(function () {
         try {
-          window.focus();
-          window.print();
+          setTimeout(function () {
+            window.focus();
+            window.print();
+          }, 180);
         } catch (err) {
           // ignore
         }
-      }, 220);
+      });
     });
   </script>`;
   return html.replace("</head>", `${printStyle}</head>`).replace("</body>", `${printScript}</body>`);
+}
+
+function openHtmlInNewTab(html: string): boolean {
+  const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+  const objectUrl = URL.createObjectURL(blob);
+  const opened = window.open(objectUrl, "_blank");
+  if (!opened) {
+    URL.revokeObjectURL(objectUrl);
+    return false;
+  }
+  window.setTimeout(() => {
+    URL.revokeObjectURL(objectUrl);
+  }, 120000);
+  return true;
 }
 
 function downloadTextFile(fileName: string, content: string, mimeType: string): void {
@@ -531,15 +563,10 @@ export function exportCurrentConversationToPdf(): ConversationExportResult {
   const title = getCurrentConversationTitle();
   const url = getCurrentConversationUrl();
   const html = buildConversationPdfDocument(title, url, messages);
-
-  const printWindow = window.open("", "_blank", "noopener,noreferrer");
-  if (!printWindow) {
+  const opened = openHtmlInNewTab(html);
+  if (!opened) {
     return { ok: false, reason: "浏览器拦截了弹窗，请允许后重试" };
   }
-
-  printWindow.document.open();
-  printWindow.document.write(html);
-  printWindow.document.close();
 
   return {
     ok: true,
